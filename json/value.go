@@ -1,9 +1,9 @@
 package json
 
 import (
-	stdjson "encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 )
 
 type RawMessage []byte
@@ -36,9 +36,9 @@ func (n Number) MarshalJSON() ([]byte, error) {
 }
 
 func (n Number) Float64() (float64, error) {
-	return stdjson.Number(n).Float64()
+	return strconv.ParseFloat(string(n), 64)
 }
 
 func (n Number) Int64() (int64, error) {
-	return stdjson.Number(n).Int64()
+	return strconv.ParseInt(string(n), 10, 64)
 }

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -230,8 +232,8 @@ func TestDecoderOptions(t *testing.T) {
 
 	t.Run("comments and trailing commas", func(t *testing.T) {
 		d := NewDecoder(strings.NewReader("{\n  // item count\n  \"n\": 1,\n}\n"))
-		d.AllowComments = true
-		d.AllowTrailingComma = true
+		d.SetAllowComments(true)
+		d.SetAllowTrailingComma(true)
 		var got map[string]int
 		m, err := d.Decode(&got)
 		if err != nil {
@@ -244,6 +246,246 @@ func TestDecoderOptions(t *testing.T) {
 			t.Fatalf("root bytes lost trivia: %q", m.Root().Bytes())
 		}
 	})
+}
+
+func TestDecoderRepeatedDecodeParity(t *testing.T) {
+	input := `{"a":1} [2,3] true`
+	d := NewDecoder(strings.NewReader(input))
+	std := stdjson.NewDecoder(strings.NewReader(input))
+
+	var got1 map[string]int
+	var want1 map[string]int
+	if _, err := d.Decode(&got1); err != nil {
+		t.Fatal(err)
+	}
+	if err := std.Decode(&want1); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got1, want1) {
+		t.Fatalf("first decode got %#v want %#v", got1, want1)
+	}
+
+	if d.InputOffset() != std.InputOffset() {
+		t.Fatalf("offset after first decode got %d want %d", d.InputOffset(), std.InputOffset())
+	}
+	buffered, err := io.ReadAll(d.Buffered())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buffered) != ` [2,3] true` {
+		t.Fatalf("buffered after first decode got %q", buffered)
+	}
+
+	var got2 []int
+	var want2 []int
+	if _, err := d.Decode(&got2); err != nil {
+		t.Fatal(err)
+	}
+	if err := std.Decode(&want2); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got2, want2) {
+		t.Fatalf("second decode got %#v want %#v", got2, want2)
+	}
+
+	var got3 bool
+	var want3 bool
+	if _, err := d.Decode(&got3); err != nil {
+		t.Fatal(err)
+	}
+	if err := std.Decode(&want3); err != nil {
+		t.Fatal(err)
+	}
+	if got3 != want3 {
+		t.Fatalf("third decode got %v want %v", got3, want3)
+	}
+	if _, err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
+		t.Fatalf("final decode got %v want io.EOF", err)
+	}
+}
+
+func TestDecoderRepeatedDecodeMetaListsAreSeparate(t *testing.T) {
+	d := NewDecoder(strings.NewReader(`{"a":1}{"b":2}`))
+
+	first, err := d.decodeMeta(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := d.decodeMeta(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(first.Root().Bytes()); got != `{"a":1}` {
+		t.Fatalf("first root got %q", got)
+	}
+	if got := string(second.Root().Bytes()); got != `{"b":2}` {
+		t.Fatalf("second root got %q", got)
+	}
+	if first.SST.Tokens == second.SST.Tokens {
+		t.Fatal("DecodeMeta reused token list across values")
+	}
+}
+
+func TestDecoderMore(t *testing.T) {
+	d := NewDecoder(strings.NewReader(` 1 2 ]`))
+	if !d.More() {
+		t.Fatal("More before first value got false")
+	}
+	var first int
+	if _, err := d.Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	if first != 1 {
+		t.Fatalf("first got %d", first)
+	}
+	if !d.More() {
+		t.Fatal("More before second value got false")
+	}
+	var second int
+	if _, err := d.Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if second != 2 {
+		t.Fatalf("second got %d", second)
+	}
+	if d.More() {
+		t.Fatal("More before closing delimiter got true")
+	}
+}
+
+func TestUtilityFunctionsParityWithStdlib(t *testing.T) {
+	validTests := []string{
+		`null`,
+		`{"a":[1,true,null],"b":"x"}`,
+		``,
+		`{"a":1,}`,
+		`{"a":// comment` + "\n" + `1}`,
+	}
+	for _, data := range validTests {
+		if got, want := Valid([]byte(data)), stdjson.Valid([]byte(data)); got != want {
+			t.Fatalf("Valid(%q) = %v, want %v", data, got, want)
+		}
+	}
+
+	formatTests := []string{
+		`{"b":2,"a":[1,true,null],"s":"<&>"}`,
+		" \n\t" + `{"nested":{"x":1},"arr":[1,2]}`,
+		`{"trailing":true}` + "\n\t ",
+	}
+	for _, data := range formatTests {
+		t.Run("Compact/"+data, func(t *testing.T) {
+			var got bytes.Buffer
+			var want bytes.Buffer
+			gotErr := Compact(&got, []byte(data))
+			wantErr := stdjson.Compact(&want, []byte(data))
+			if (gotErr != nil) != (wantErr != nil) {
+				t.Fatalf("Compact error got %v want %v", gotErr, wantErr)
+			}
+			if got.String() != want.String() {
+				t.Fatalf("Compact got %q want %q", got.String(), want.String())
+			}
+		})
+
+		t.Run("Indent/"+data, func(t *testing.T) {
+			var got bytes.Buffer
+			var want bytes.Buffer
+			gotErr := Indent(&got, []byte(data), ">", "  ")
+			wantErr := stdjson.Indent(&want, []byte(data), ">", "  ")
+			if (gotErr != nil) != (wantErr != nil) {
+				t.Fatalf("Indent error got %v want %v", gotErr, wantErr)
+			}
+			if got.String() != want.String() {
+				t.Fatalf("Indent got:\n%s\nwant:\n%s", got.String(), want.String())
+			}
+		})
+	}
+
+	html := []byte(`{"s":"<&>` + "\u2028\u2029" + `"}`)
+	var got bytes.Buffer
+	var want bytes.Buffer
+	HTMLEscape(&got, html)
+	stdjson.HTMLEscape(&want, html)
+	if got.String() != want.String() {
+		t.Fatalf("HTMLEscape got %q want %q", got.String(), want.String())
+	}
+}
+
+func TestUtilityFunctionsPreserveComments(t *testing.T) {
+	input := []byte("{\n  // before\n  \"a\": 1, // after\n  \"b\": [2,],\n}\n")
+
+	var compact bytes.Buffer
+	if err := Compact(&compact, input); err != nil {
+		t.Fatal(err)
+	}
+	compactWant := "{// before\n\"a\":1,// after\n\"b\":[2,],}"
+	if compact.String() != compactWant {
+		t.Fatalf("Compact with comments got %q want %q", compact.String(), compactWant)
+	}
+
+	var indented bytes.Buffer
+	if err := Indent(&indented, input, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	indentWant := "{\n  // before\n  \"a\": 1, // after\n  \"b\": [\n    2,\n  ],\n}\n"
+	if indented.String() != indentWant {
+		t.Fatalf("Indent with comments got:\n%s\nwant:\n%s", indented.String(), indentWant)
+	}
+}
+
+func TestEncoderOptionErgonomics(t *testing.T) {
+	var got bytes.Buffer
+	enc := NewEncoder(&got)
+	enc.SetIndent(">", "  ")
+	if err := enc.Encode(map[string]int{"a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	var want bytes.Buffer
+	std := stdjson.NewEncoder(&want)
+	std.SetIndent(">", "  ")
+	if err := std.Encode(map[string]int{"a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != strings.TrimSuffix(want.String(), "\n") {
+		t.Fatalf("SetIndent got:\n%s\nwant:\n%s", got.String(), want.String())
+	}
+
+	got.Reset()
+	enc = NewEncoder(&got)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode("<&>"); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != `"<&>"` {
+		t.Fatalf("SetEscapeHTML(false) got %q", got.String())
+	}
+
+	encoded, err := Marshal("<&>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `"\u003c\u0026\u003e"` {
+		t.Fatalf("default HTML escaping got %s", encoded)
+	}
+}
+
+func TestProductionDoesNotImportEncodingJSON(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), `"encoding/json"`) {
+			t.Fatalf("%s imports encoding/json", file)
+		}
+	}
 }
 
 func TestLexerTokens(t *testing.T) {

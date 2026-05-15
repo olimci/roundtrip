@@ -3,7 +3,6 @@ package json
 import (
 	"bytes"
 	"encoding/base64"
-	stdjson "encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -11,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/olimci/roundtrip/internal/list"
 	"github.com/olimci/roundtrip/internal/util/reflectutil"
@@ -33,10 +33,12 @@ func NewEncoder(w io.Writer) *Encoder {
 }
 
 type Encoder struct {
-	w      io.Writer
-	Indent string
-	depth  int
-	tokens *list.List[token]
+	w                  io.Writer
+	Indent             string
+	Prefix             string
+	escapeHTMLDisabled bool
+	depth              int
+	tokens             *list.List[token]
 }
 
 func (e *Encoder) EncodeMeta(m *Meta) error {
@@ -51,6 +53,15 @@ func (e *Encoder) Encode(v any) error {
 	}
 	_, err = e.w.Write(n.Bytes())
 	return err
+}
+
+func (e *Encoder) SetIndent(prefix, indent string) {
+	e.Prefix = prefix
+	e.Indent = indent
+}
+
+func (e *Encoder) SetEscapeHTML(on bool) {
+	e.escapeHTMLDisabled = !on
 }
 
 func (e *Encoder) encode(v any) (*node, error) {
@@ -88,7 +99,7 @@ func (e *Encoder) value(v reflect.Value, depth int) (*node, error) {
 		if err != nil {
 			return nil, err
 		}
-		return e.scalar(NodeTypeString, TokenString, quoteString(string(b))), nil
+		return e.scalar(NodeTypeString, TokenString, e.quoteString(string(b))), nil
 	}
 
 	switch v.Kind() {
@@ -97,7 +108,7 @@ func (e *Encoder) value(v reflect.Value, depth int) (*node, error) {
 	case reflect.Bool:
 		return e.scalar(NodeTypeBool, TokenIdentifier, strconv.FormatBool(v.Bool())), nil
 	case reflect.String:
-		return e.scalar(NodeTypeString, TokenString, quoteString(v.String())), nil
+		return e.scalar(NodeTypeString, TokenString, e.quoteString(v.String())), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return e.scalar(NodeTypeNumber, TokenNumber, strconv.FormatInt(v.Int(), 10)), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
@@ -107,14 +118,10 @@ func (e *Encoder) value(v reflect.Value, depth int) (*node, error) {
 		if math.IsInf(f, 0) || math.IsNaN(f) {
 			return nil, fmt.Errorf("cannot encode %v", f)
 		}
-		b, err := stdjson.Marshal(v.Interface())
-		if err != nil {
-			return nil, err
-		}
-		return e.scalar(NodeTypeNumber, TokenNumber, string(b)), nil
+		return e.scalar(NodeTypeNumber, TokenNumber, formatFloat(f, int(v.Type().Bits()))), nil
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return e.scalar(NodeTypeString, TokenString, quoteString(base64.StdEncoding.EncodeToString(v.Bytes()))), nil
+			return e.scalar(NodeTypeString, TokenString, e.quoteString(base64.StdEncoding.EncodeToString(v.Bytes()))), nil
 		}
 		return e.array(v, depth)
 	case reflect.Array:
@@ -178,7 +185,7 @@ func (e *Encoder) mapValue(v reflect.Value, depth int) (*node, error) {
 			e.token(TokenComma, ",")
 		}
 		e.newline(depth + 1)
-		keyNode := e.scalar(NodeTypeString, TokenString, quoteString(key))
+		keyNode := e.scalar(NodeTypeString, TokenString, e.quoteString(key))
 		e.token(TokenColon, ":")
 		e.fieldSpace()
 		valueNode, err := e.value(v.MapIndex(keyValues[key]), depth+1)
@@ -203,7 +210,7 @@ func (e *Encoder) structValue(v reflect.Value, depth int) (*node, error) {
 			e.token(TokenComma, ",")
 		}
 		e.newline(depth + 1)
-		keyNode := e.scalar(NodeTypeString, TokenString, quoteString(field.Name))
+		keyNode := e.scalar(NodeTypeString, TokenString, e.quoteString(field.Name))
 		e.token(TokenColon, ":")
 		e.fieldSpace()
 		fieldValue := field.Value
@@ -236,8 +243,95 @@ func encodedValueString(v reflect.Value) (string, error) {
 	return string(n.Bytes()), nil
 }
 
+func (e *Encoder) quoteString(s string) string {
+	return string(appendQuotedString(nil, s, !e.escapeHTMLDisabled))
+}
+
 func quoteString(s string) string {
-	b, _ := stdjson.Marshal(s)
+	return string(appendQuotedString(nil, s, true))
+}
+
+func appendQuotedString(dst []byte, src string, escapeHTML bool) []byte {
+	const hex = "0123456789abcdef"
+
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(src); {
+		if b := src[i]; b < utf8.RuneSelf {
+			if jsonStringByteSafe(b, escapeHTML) {
+				i++
+				continue
+			}
+			dst = append(dst, src[start:i]...)
+			switch b {
+			case '\\', '"':
+				dst = append(dst, '\\', b)
+			case '\b':
+				dst = append(dst, '\\', 'b')
+			case '\f':
+				dst = append(dst, '\\', 'f')
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			default:
+				dst = append(dst, '\\', 'u', '0', '0', hex[b>>4], hex[b&0xf])
+			}
+			i++
+			start = i
+			continue
+		}
+
+		r, size := utf8.DecodeRuneInString(src[i:])
+		if r == utf8.RuneError && size == 1 {
+			dst = append(dst, src[start:i]...)
+			dst = append(dst, `\ufffd`...)
+			i += size
+			start = i
+			continue
+		}
+		if r == '\u2028' || r == '\u2029' {
+			dst = append(dst, src[start:i]...)
+			dst = append(dst, '\\', 'u', '2', '0', '2', hex[r&0xf])
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	dst = append(dst, src[start:]...)
+	dst = append(dst, '"')
+	return dst
+}
+
+func jsonStringByteSafe(b byte, escapeHTML bool) bool {
+	if b < 0x20 || b == '\\' || b == '"' {
+		return false
+	}
+	if escapeHTML && (b == '<' || b == '>' || b == '&') {
+		return false
+	}
+	return true
+}
+
+func formatFloat(f float64, bits int) string {
+	abs := math.Abs(f)
+	fmt := byte('f')
+	if abs != 0 {
+		if bits == 64 && (abs < 1e-6 || abs >= 1e21) || bits == 32 && (float32(abs) < 1e-6 || float32(abs) >= 1e21) {
+			fmt = 'e'
+		}
+	}
+	b := strconv.AppendFloat(nil, f, fmt, -1, bits)
+	if fmt == 'e' {
+		n := len(b)
+		if n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
+			b[n-2] = b[n-1]
+			b = b[:n-1]
+		}
+	}
 	return string(b)
 }
 
@@ -246,7 +340,7 @@ func (e *Encoder) newline(depth int) {
 		return
 	}
 	e.token(TokenNewline, "\n")
-	e.token(TokenWhitespace, strings.Repeat(e.Indent, e.depth+depth))
+	e.token(TokenWhitespace, e.Prefix+strings.Repeat(e.Indent, e.depth+depth))
 }
 
 func (e *Encoder) fieldSpace() {

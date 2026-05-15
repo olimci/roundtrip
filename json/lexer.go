@@ -9,15 +9,12 @@ import (
 	"unicode"
 
 	"github.com/olimci/roundtrip/internal/cursor"
-	"github.com/olimci/roundtrip/internal/list"
 )
 
 func newLexer(r io.Reader) *lexer {
 	return &lexer{
-		reader:  bufio.NewReader(r),
-		list:    list.New[token](),
-		cursor:  cursor.NewCursor(),
-		collect: true,
+		reader: bufio.NewReader(r),
+		cursor: cursor.NewCursor(),
 	}
 }
 
@@ -25,7 +22,6 @@ func newLexer(r io.Reader) *lexer {
 func lex(data []byte) iter.Seq[token] {
 	return func(yield func(token) bool) {
 		l := newLexer(bytes.NewReader(data))
-		l.collect = false
 		for {
 			t := l.next()
 			if t.Type == TokenEOF {
@@ -42,30 +38,10 @@ type lexer struct {
 	reader *bufio.Reader
 	peek   *token
 
-	list        *list.List[token]
-	currentElem *list.Elem[token]
-	collect     bool
-
 	cursor *cursor.Cursor
 }
 
 func (l *lexer) next() token {
-	t := l.readToken()
-	if l.collect {
-		l.currentElem = l.list.PushBack(t)
-	}
-	return t
-}
-
-func (l *lexer) peekToken() token {
-	if l.peek == nil {
-		t := l.readToken()
-		l.peek = &t
-	}
-	return *l.peek
-}
-
-func (l *lexer) readToken() token {
 	if l.peek != nil {
 		t := *l.peek
 		l.peek = nil
@@ -77,6 +53,14 @@ func (l *lexer) readToken() token {
 	t.Position = pos
 
 	return t
+}
+
+func (l *lexer) peekToken() token {
+	if l.peek == nil {
+		t := l.next()
+		l.peek = &t
+	}
+	return *l.peek
 }
 
 func (l *lexer) assert(s string) bool {

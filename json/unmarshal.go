@@ -142,7 +142,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 func decodeAny(m *Meta, n *node, opts decodeOptions) (any, error) {
 	switch n.Type {
 	case NodeTypeObject:
-		value := make(map[string]any, objectFieldCount(n))
+		value := make(map[string]any, len(n.Children)/2)
 		for keyNode, valueNode := range objectFields(n) {
 			key, err := decodeString(m, keyNode)
 			if err != nil {
@@ -232,7 +232,7 @@ func decodeMap(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		return fmt.Errorf("cannot decode object into %v", v.Type())
 	}
 	if v.IsNil() {
-		v.Set(reflect.MakeMapWithSize(v.Type(), objectFieldCount(n)))
+		v.Set(reflect.MakeMapWithSize(v.Type(), len(n.Children)/2))
 	}
 
 	for keyNode, valueNode := range objectFields(n) {

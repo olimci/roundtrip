@@ -115,7 +115,7 @@ func (n Node) RemoveObjectField(name string) error {
 	if !ok {
 		return ErrObjectFieldNotFound
 	}
-	first, last := n.removeObjectFieldRange(index)
+	first, last := n.removeChildPairRange(index * 2)
 	n.meta.SST.Tokens.ReplaceRange(first, last, new(list.List[token]))
 	n.node.Children = append(n.node.Children[:index*2], n.node.Children[index*2+2:]...)
 	return nil
@@ -243,10 +243,6 @@ func (n Node) leadingGap(childIndex int) *list.List[token] {
 	return tokens
 }
 
-func (n Node) removeObjectFieldRange(index int) (*list.Elem[token], *list.Elem[token]) {
-	return n.removeChildPairRange(index * 2)
-}
-
 func (n Node) removeChildPairRange(childIndex int) (*list.Elem[token], *list.Elem[token]) {
 	if len(n.node.Children) == 2 {
 		return n.node.Children[childIndex].Start, n.node.Children[childIndex+1].End
@@ -286,10 +282,6 @@ func (n Node) fieldValuePrefix() string {
 		}
 	}
 	return ""
-}
-
-func objectFieldCount(n *node) int {
-	return len(n.Children) / 2
 }
 
 func objectFields(n *node) iter.Seq2[*node, *node] {

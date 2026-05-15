@@ -2,13 +2,23 @@ package json
 
 import (
 	"bytes"
+	"errors"
 	"io"
 
+	"github.com/olimci/roundtrip/internal/list"
 	"github.com/olimci/roundtrip/internal/sst"
 )
 
 func Unmarshal(data []byte, v any) (*Meta, error) {
-	return NewDecoder(bytes.NewReader(data)).Decode(v)
+	d := NewDecoder(bytes.NewReader(data))
+	m, err := d.DecodeMeta()
+	if err != nil {
+		return nil, err
+	}
+	return m, decodeInto(m, m.SST.Root, v, decodeOptions{
+		useNumber:       d.useNumber,
+		disallowUnknown: d.disallowUnknown,
+	})
 }
 
 func NewDecoder(r io.Reader) *Decoder {
@@ -19,6 +29,8 @@ func NewDecoder(r io.Reader) *Decoder {
 
 type Decoder struct {
 	l                  *lexer
+	tokens             *list.List[token]
+	currentElem        *list.Elem[token]
 	AllowComments      bool
 	AllowTrailingComma bool
 	useNumber          bool
@@ -30,6 +42,9 @@ func (d *Decoder) DecodeMeta() (*Meta, error) {
 }
 
 func (d *Decoder) decodeMeta(requireEOF bool) (*Meta, error) {
+	d.tokens = list.New[token]()
+	d.currentElem = nil
+
 	root, err := d.parse()
 	if err != nil {
 		return nil, err
@@ -46,15 +61,18 @@ func (d *Decoder) decodeMeta(requireEOF bool) (*Meta, error) {
 	return &Meta{
 		Indent: detectIndent(root),
 		SST: sst.SST[TokenType, NodeType]{
-			Tokens: d.l.list,
+			Tokens: d.tokens,
 			Root:   root,
 		},
 	}, nil
 }
 
 func (d *Decoder) Decode(v any) (*Meta, error) {
-	m, err := d.DecodeMeta()
+	m, err := d.decodeMeta(false)
 	if err != nil {
+		if errors.Is(err, ErrUnexpectedEOF) && d.onlyConsumedTrivia() {
+			return nil, io.EOF
+		}
 		return nil, err
 	}
 	return m, decodeInto(m, m.SST.Root, v, decodeOptions{
@@ -69,6 +87,41 @@ func (d *Decoder) UseNumber() {
 
 func (d *Decoder) DisallowUnknownFields() {
 	d.disallowUnknown = true
+}
+
+func (d *Decoder) SetAllowComments(on bool) {
+	d.AllowComments = on
+}
+
+func (d *Decoder) SetAllowTrailingComma(on bool) {
+	d.AllowTrailingComma = on
+}
+
+func (d *Decoder) More() bool {
+	for {
+		t := d.l.peekToken()
+		if t.Type == TokenWhitespace || t.Type == TokenNewline || (t.Type == TokenComment && d.AllowComments) {
+			_ = d.l.next()
+			continue
+		}
+		return t.Type != TokenEOF && t.Type != TokenRightBrace && t.Type != TokenRightBracket
+	}
+}
+
+func (d *Decoder) Buffered() io.Reader {
+	var b bytes.Buffer
+	if d.l.peek != nil {
+		b.WriteString(d.l.peek.Literal)
+	}
+	if n := d.l.reader.Buffered(); n > 0 {
+		buf, _ := d.l.reader.Peek(n)
+		b.Write(buf)
+	}
+	return bytes.NewReader(b.Bytes())
+}
+
+func (d *Decoder) InputOffset() int64 {
+	return int64(d.l.cursor.Offset)
 }
 
 func (d *Decoder) parse() (*node, error) {
@@ -96,16 +149,16 @@ func (d *Decoder) parse() (*node, error) {
 }
 
 func (d *Decoder) parseObject() (*node, error) {
-	_ = d.l.next()
-	start := d.l.currentElem
+	_ = d.next()
+	start := d.currentElem
 
 	n := &node{Type: NodeTypeObject, Start: start}
 	d.consume()
 
 	t := d.l.peekToken()
 	if t.Type == TokenRightBrace {
-		_ = d.l.next()
-		n.End = d.l.currentElem
+		_ = d.next()
+		n.End = d.currentElem
 		return n, nil
 	}
 
@@ -130,7 +183,7 @@ func (d *Decoder) parseObject() (*node, error) {
 		if t.Type != TokenColon {
 			return nil, ParseError{ErrUnexpectedToken, t}
 		}
-		_ = d.l.next()
+		_ = d.next()
 
 		value, err := d.parse()
 		if err != nil {
@@ -145,20 +198,20 @@ func (d *Decoder) parseObject() (*node, error) {
 		}
 		switch t.Type {
 		case TokenComma:
-			_ = d.l.next()
+			_ = d.next()
 			d.consume()
 			t = d.l.peekToken()
 			if t.Type == TokenRightBrace {
 				if !d.AllowTrailingComma {
 					return nil, ParseError{ErrUnexpectedToken, t}
 				}
-				_ = d.l.next()
-				n.End = d.l.currentElem
+				_ = d.next()
+				n.End = d.currentElem
 				return n, nil
 			}
 		case TokenRightBrace:
-			_ = d.l.next()
-			n.End = d.l.currentElem
+			_ = d.next()
+			n.End = d.currentElem
 			return n, nil
 		default:
 			return nil, ParseError{ErrUnexpectedToken, t}
@@ -167,16 +220,16 @@ func (d *Decoder) parseObject() (*node, error) {
 }
 
 func (d *Decoder) parseArray() (*node, error) {
-	_ = d.l.next()
-	start := d.l.currentElem
+	_ = d.next()
+	start := d.currentElem
 
 	n := &node{Type: NodeTypeArray, Start: start}
 	d.consume()
 
 	t := d.l.peekToken()
 	if t.Type == TokenRightBracket {
-		_ = d.l.next()
-		n.End = d.l.currentElem
+		_ = d.next()
+		n.End = d.currentElem
 		return n, nil
 	}
 
@@ -198,20 +251,20 @@ func (d *Decoder) parseArray() (*node, error) {
 		}
 		switch t.Type {
 		case TokenComma:
-			_ = d.l.next()
+			_ = d.next()
 			d.consume()
 			t = d.l.peekToken()
 			if t.Type == TokenRightBracket {
 				if !d.AllowTrailingComma {
 					return nil, ParseError{ErrUnexpectedToken, t}
 				}
-				_ = d.l.next()
-				n.End = d.l.currentElem
+				_ = d.next()
+				n.End = d.currentElem
 				return n, nil
 			}
 		case TokenRightBracket:
-			_ = d.l.next()
-			n.End = d.l.currentElem
+			_ = d.next()
+			n.End = d.currentElem
 			return n, nil
 		default:
 			return nil, ParseError{ErrUnexpectedToken, t}
@@ -220,8 +273,8 @@ func (d *Decoder) parseArray() (*node, error) {
 }
 
 func (d *Decoder) parseScalar(t NodeType) (*node, error) {
-	_ = d.l.next()
-	i := d.l.currentElem
+	_ = d.next()
+	i := d.currentElem
 	return &node{Type: t, Start: i, End: i}, nil
 }
 
@@ -241,9 +294,30 @@ func (d *Decoder) consume() {
 	for {
 		t := d.l.peekToken()
 		if t.Type == TokenWhitespace || t.Type == TokenNewline || (t.Type == TokenComment && d.AllowComments) {
-			_ = d.l.next()
+			_ = d.next()
 			continue
 		}
 		break
 	}
+}
+
+func (d *Decoder) next() token {
+	t := d.l.next()
+	d.currentElem = d.tokens.PushBack(t)
+	return t
+}
+
+func (d *Decoder) onlyConsumedTrivia() bool {
+	for e := d.tokens.Head; e != nil; e = e.Next {
+		switch e.Value.Type {
+		case TokenWhitespace, TokenNewline:
+			continue
+		case TokenComment:
+			if d.AllowComments {
+				continue
+			}
+		}
+		return false
+	}
+	return true
 }
