@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/olimci/roundtrip/internal/util/reflectutil"
 )
@@ -90,7 +92,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		if n.Type != NodeTypeString {
 			return typeError(n, v.Type())
 		}
-		value, err := strconv.Unquote(n.Start.Value.Literal)
+		value, err := decodeString(m, n)
 		if err != nil {
 			return err
 		}
@@ -275,7 +277,10 @@ func decodeStruct(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 			continue
 		}
 		valueMeta := m
-		target := v.Field(field.Index)
+		target, ok := fieldByIndex(v, field.Index, true)
+		if !ok {
+			return fmt.Errorf("json: cannot set embedded pointer for field %q", field.Name)
+		}
 		if field.Options.Quoted {
 			decoded, err := quotedNode(m, valueNode)
 			if err != nil {
@@ -362,5 +367,105 @@ func decodeString(m *Meta, n *node) (string, error) {
 	if n.Type != NodeTypeString {
 		return "", fmt.Errorf("cannot decode %v into string", n.Type)
 	}
-	return strconv.Unquote(n.Start.Value.Literal)
+	return unquoteJSONString(n.Start.Value.Literal)
+}
+
+func unquoteJSONString(s string) (string, error) {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return "", fmt.Errorf("invalid JSON string %q", s)
+	}
+
+	var b strings.Builder
+	b.Grow(len(s) - 2)
+	for i := 1; i < len(s)-1; {
+		c := s[i]
+		if c == '\\' {
+			i++
+			if i >= len(s)-1 {
+				return "", fmt.Errorf("invalid JSON string escape %q", s)
+			}
+
+			switch c = s[i]; c {
+			case '"', '\\', '/':
+				b.WriteByte(c)
+				i++
+			case 'b':
+				b.WriteByte('\b')
+				i++
+			case 'f':
+				b.WriteByte('\f')
+				i++
+			case 'n':
+				b.WriteByte('\n')
+				i++
+			case 'r':
+				b.WriteByte('\r')
+				i++
+			case 't':
+				b.WriteByte('\t')
+				i++
+			case 'u':
+				r, err := unquoteJSONUnicodeEscape(s, i+1)
+				if err != nil {
+					return "", err
+				}
+				i += 5
+
+				if 0xd800 <= r && r <= 0xdbff {
+					if i+5 < len(s)-1 && s[i] == '\\' && s[i+1] == 'u' {
+						r2, err := unquoteJSONUnicodeEscape(s, i+2)
+						if err != nil {
+							return "", err
+						}
+						if decoded := utf16.DecodeRune(r, r2); decoded != utf8.RuneError {
+							r = decoded
+							i += 6
+						} else {
+							r = utf8.RuneError
+						}
+					} else {
+						r = utf8.RuneError
+					}
+				} else if 0xdc00 <= r && r <= 0xdfff {
+					r = utf8.RuneError
+				}
+				b.WriteRune(r)
+			default:
+				return "", fmt.Errorf("invalid JSON string escape %q", s)
+			}
+			continue
+		}
+
+		if c < 0x20 {
+			return "", fmt.Errorf("invalid character in JSON string %q", s)
+		}
+
+		r, size := utf8.DecodeRuneInString(s[i : len(s)-1])
+		b.WriteRune(r)
+		i += size
+	}
+
+	return b.String(), nil
+}
+
+func unquoteJSONUnicodeEscape(s string, i int) (rune, error) {
+	if i+4 > len(s) {
+		return 0, fmt.Errorf("invalid JSON unicode escape %q", s)
+	}
+
+	var r rune
+	for _, c := range s[i : i+4] {
+		r <<= 4
+		switch {
+		case '0' <= c && c <= '9':
+			r += c - '0'
+		case 'a' <= c && c <= 'f':
+			r += c - 'a' + 10
+		case 'A' <= c && c <= 'F':
+			r += c - 'A' + 10
+		default:
+			return 0, fmt.Errorf("invalid JSON unicode escape %q", s)
+		}
+	}
+	return r, nil
 }

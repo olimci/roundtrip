@@ -1,11 +1,14 @@
 package json
 
 import (
+	"cmp"
 	"encoding"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"unicode"
 )
 
 type Marshaler interface {
@@ -16,11 +19,9 @@ var marshalerType = reflect.TypeFor[Marshaler]()
 var textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
 
 type structField struct {
-	Name      string
-	Value     reflect.Value
-	OmitEmpty bool
-	OmitZero  bool
-	Quoted    bool
+	Name   string
+	Value  reflect.Value
+	Quoted bool
 }
 
 type fieldOptions struct {
@@ -30,27 +31,25 @@ type fieldOptions struct {
 }
 
 type structFieldIndex struct {
-	Index   int
+	Name    string
+	Index   []int
 	Options fieldOptions
+	Tagged  bool
+	Type    reflect.Type
+	IsZero  func(reflect.Value) bool
 }
 
 func encodedStructFields(v reflect.Value) []structField {
 	fields := []structField{}
-	t := v.Type()
-	for i := range t.NumField() {
-		f := t.Field(i)
-		if f.PkgPath != "" {
-			continue
-		}
-		name, opts, ok := parseFieldTag(f)
+	for _, f := range structFieldIndexes(v.Type()) {
+		value, ok := fieldByIndex(v, f.Index, false)
 		if !ok {
 			continue
 		}
-		value := v.Field(i)
-		if (opts.OmitEmpty && isEmptyValue(value)) || (opts.OmitZero && value.IsZero()) {
+		if (f.Options.OmitEmpty && isEmptyValue(value)) || (f.Options.OmitZero && isZeroValue(value, f.IsZero)) {
 			continue
 		}
-		fields = append(fields, structField{Name: name, Value: value, OmitEmpty: opts.OmitEmpty, OmitZero: opts.OmitZero, Quoted: opts.Quoted})
+		fields = append(fields, structField{Name: f.Name, Value: value, Quoted: f.Options.Quoted})
 	}
 	return fields
 }
@@ -75,29 +74,82 @@ func textMarshaler(v reflect.Value) (encoding.TextMarshaler, bool) {
 	return nil, false
 }
 
-func parseFieldTag(f reflect.StructField) (string, fieldOptions, bool) {
-	name := f.Name
-	opts := fieldOptions{}
-	if tag := f.Tag.Get("json"); tag != "" {
-		tagName, tagOpts, _ := strings.Cut(tag, ",")
-		if tagName == "-" {
-			return "", opts, false
+func parseFieldInfo(parent structFieldIndex, f reflect.StructField, i int) (structFieldIndex, bool, bool) {
+	if f.Anonymous {
+		t := f.Type
+		if t.Kind() == reflect.Pointer {
+			t = t.Elem()
 		}
-		if tagName != "" {
-			name = tagName
+		if !f.IsExported() && t.Kind() != reflect.Struct {
+			return structFieldIndex{}, false, false
 		}
-		for opt := range strings.SplitSeq(tagOpts, ",") {
-			switch opt {
-			case "omitempty":
-				opts.OmitEmpty = true
-			case "omitzero":
-				opts.OmitZero = true
-			case "string":
-				opts.Quoted = true
-			}
+	} else if !f.IsExported() {
+		return structFieldIndex{}, false, false
+	}
+
+	tag := f.Tag.Get("json")
+	if tag == "-" {
+		return structFieldIndex{}, false, false
+	}
+
+	name, opts, tagged := strings.Cut(tag, ",")
+	if !isValidTag(name) {
+		name = ""
+	}
+	options := fieldOptions{}
+	for opt := range strings.SplitSeq(opts, ",") {
+		switch opt {
+		case "omitempty":
+			options.OmitEmpty = true
+		case "omitzero":
+			options.OmitZero = true
+		case "string":
+			options.Quoted = true
 		}
 	}
-	return name, opts, true
+	tagged = tagged || name != ""
+
+	index := slices.Clone(parent.Index)
+	index = append(index, i)
+
+	ft := f.Type
+	if ft.Name() == "" && ft.Kind() == reflect.Pointer {
+		ft = ft.Elem()
+	}
+	options.Quoted = options.Quoted && quoteType(ft)
+
+	if name != "" || !f.Anonymous || ft.Kind() != reflect.Struct {
+		if name == "" {
+			name = f.Name
+			tagged = false
+		}
+		field := structFieldIndex{
+			Name:    name,
+			Index:   index,
+			Options: options,
+			Tagged:  tagged,
+			Type:    ft,
+		}
+		if options.OmitZero {
+			field.IsZero = zeroFunc(f.Type)
+		}
+		return field, true, false
+	}
+
+	return structFieldIndex{Name: ft.Name(), Index: index, Type: ft}, false, true
+}
+
+func isValidTag(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c) || unicode.IsLetter(c) || unicode.IsDigit(c) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func isEmptyValue(v reflect.Value) bool {
@@ -118,6 +170,46 @@ func isEmptyValue(v reflect.Value) bool {
 		return v.IsNil()
 	}
 	return false
+}
+
+type isZeroer interface {
+	IsZero() bool
+}
+
+var isZeroerType = reflect.TypeFor[isZeroer]()
+
+func zeroFunc(t reflect.Type) func(reflect.Value) bool {
+	switch {
+	case t.Kind() == reflect.Interface && t.Implements(isZeroerType):
+		return func(v reflect.Value) bool {
+			return v.IsNil() || (v.Elem().Kind() == reflect.Pointer && v.Elem().IsNil()) || v.Interface().(isZeroer).IsZero()
+		}
+	case t.Kind() == reflect.Pointer && t.Implements(isZeroerType):
+		return func(v reflect.Value) bool {
+			return v.IsNil() || v.Interface().(isZeroer).IsZero()
+		}
+	case t.Implements(isZeroerType):
+		return func(v reflect.Value) bool {
+			return v.Interface().(isZeroer).IsZero()
+		}
+	case reflect.PointerTo(t).Implements(isZeroerType):
+		return func(v reflect.Value) bool {
+			if !v.CanAddr() {
+				v2 := reflect.New(v.Type()).Elem()
+				v2.Set(v)
+				v = v2
+			}
+			return v.Addr().Interface().(isZeroer).IsZero()
+		}
+	}
+	return nil
+}
+
+func isZeroValue(v reflect.Value, isZero func(reflect.Value) bool) bool {
+	if isZero != nil {
+		return isZero(v)
+	}
+	return v.IsZero()
 }
 
 func mapKeyString(v reflect.Value) (string, bool) {
@@ -146,40 +238,130 @@ func mapKeyTypeSupported(t reflect.Type) bool {
 	return t.Implements(textMarshalerType) || reflect.PointerTo(t).Implements(textMarshalerType)
 }
 
-func structFieldIndexes(t reflect.Type) map[string]structFieldIndex {
-	fields := map[string]structFieldIndex{}
-	for i := range t.NumField() {
-		f := t.Field(i)
-		if f.PkgPath != "" {
-			continue
-		}
-		name, opts, ok := parseFieldTag(f)
-		if !ok {
-			continue
-		}
-		fields[name] = structFieldIndex{Index: i, Options: opts}
+var structFieldCache sync.Map
+
+func structFieldIndexes(t reflect.Type) []structFieldIndex {
+	if fields, ok := structFieldCache.Load(t); ok {
+		return fields.([]structFieldIndex)
 	}
-	return fields
+
+	current := []structFieldIndex{}
+	next := []structFieldIndex{{Type: t}}
+	var count, nextCount map[reflect.Type]int
+	visited := map[reflect.Type]bool{}
+	fields := []structFieldIndex{}
+
+	for len(next) > 0 {
+		current, next = next, current[:0]
+		count, nextCount = nextCount, map[reflect.Type]int{}
+
+		for _, parent := range current {
+			if visited[parent.Type] {
+				continue
+			}
+			visited[parent.Type] = true
+
+			for i := range parent.Type.NumField() {
+				field, include, explore := parseFieldInfo(parent, parent.Type.Field(i), i)
+				if include {
+					fields = append(fields, field)
+					if count[parent.Type] > 1 {
+						fields = append(fields, field)
+					}
+				}
+				if explore {
+					nextCount[field.Type]++
+					if nextCount[field.Type] == 1 {
+						next = append(next, field)
+					}
+				}
+			}
+		}
+	}
+
+	slices.SortFunc(fields, func(a, b structFieldIndex) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(len(a.Index), len(b.Index)); c != 0 {
+			return c
+		}
+		if a.Tagged != b.Tagged {
+			if a.Tagged {
+				return -1
+			}
+			return 1
+		}
+		return slices.Compare(a.Index, b.Index)
+	})
+
+	out := fields[:0]
+	for advance, i := 0, 0; i < len(fields); i += advance {
+		name := fields[i].Name
+		for advance = 1; i+advance < len(fields) && fields[i+advance].Name == name; advance++ {
+		}
+		if advance == 1 {
+			out = append(out, fields[i])
+			continue
+		}
+		if len(fields[i].Index) != len(fields[i+1].Index) || fields[i].Tagged != fields[i+1].Tagged {
+			out = append(out, fields[i])
+		}
+	}
+	fields = out
+	slices.SortFunc(fields, func(a, b structFieldIndex) int {
+		return slices.Compare(a.Index, b.Index)
+	})
+	actual, _ := structFieldCache.LoadOrStore(t, fields)
+	return actual.([]structFieldIndex)
 }
 
-func fieldIndex(fields map[string]structFieldIndex, key string) (structFieldIndex, bool) {
-	if index, ok := fields[key]; ok {
-		return index, true
+func fieldIndex(fields []structFieldIndex, key string) (structFieldIndex, bool) {
+	for _, field := range fields {
+		if field.Name == key {
+			return field, true
+		}
 	}
-	for name, index := range fields {
-		if strings.EqualFold(name, key) {
-			return index, true
+	for _, field := range fields {
+		if strings.EqualFold(field.Name, key) {
+			return field, true
 		}
 	}
 	return structFieldIndex{}, false
 }
 
-func quoteValue(v reflect.Value) bool {
+func fieldByIndex(v reflect.Value, index []int, allocate bool) (reflect.Value, bool) {
+	for i, x := range index {
+		if v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				if !allocate {
+					return reflect.Value{}, false
+				}
+				if !v.CanSet() {
+					return reflect.Value{}, false
+				}
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		v = v.Field(x)
+		if i < len(index)-1 && v.Kind() == reflect.Pointer && v.IsNil() && !allocate {
+			return reflect.Value{}, false
+		}
+	}
+	return v, true
+}
+
+func quoteType(t reflect.Type) bool {
 	return slices.Contains([]reflect.Kind{
 		reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
 		reflect.Float32, reflect.Float64,
 		reflect.String,
-	}, v.Kind())
+	}, t.Kind())
+}
+
+func quoteValue(v reflect.Value) bool {
+	return quoteType(v.Type())
 }
