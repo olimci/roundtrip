@@ -32,13 +32,26 @@ func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{w: w}
 }
 
+func NewJSONCEncoder(w io.Writer) *Encoder {
+	return NewEncoder(w)
+}
+
+func NewJSON5Encoder(w io.Writer) *Encoder {
+	e := NewEncoder(w)
+	e.SetAllowIdentifierKeys(true)
+	e.SetAllowJSON5Numbers(true)
+	return e
+}
+
 type Encoder struct {
-	w                  io.Writer
-	Indent             string
-	Prefix             string
-	escapeHTMLDisabled bool
-	depth              int
-	tokens             *list.List[token]
+	w                   io.Writer
+	Indent              string
+	Prefix              string
+	escapeHTMLDisabled  bool
+	AllowIdentifierKeys bool
+	AllowJSON5Numbers   bool
+	depth               int
+	tokens              *list.List[token]
 }
 
 func (e *Encoder) EncodeMeta(m *Meta) error {
@@ -64,6 +77,14 @@ func (e *Encoder) SetEscapeHTML(on bool) {
 	e.escapeHTMLDisabled = !on
 }
 
+func (e *Encoder) SetAllowIdentifierKeys(on bool) {
+	e.AllowIdentifierKeys = on
+}
+
+func (e *Encoder) SetAllowJSON5Numbers(on bool) {
+	e.AllowJSON5Numbers = on
+}
+
 func (e *Encoder) encode(v any) (*node, error) {
 	e.tokens = list.New[token]()
 	return e.value(reflect.ValueOf(v), 0)
@@ -78,12 +99,32 @@ func (e *Encoder) value(v reflect.Value, depth int) (*node, error) {
 		return e.scalar(NodeTypeNull, TokenIdentifier, "null"), nil
 	}
 
+	if v.Kind() == reflect.Pointer && v.Type().Elem() == numberType && e.AllowJSON5Numbers {
+		return e.value(v.Elem(), depth)
+	}
+
+	if v.Type() == numberType && e.AllowJSON5Numbers {
+		n := v.Interface().(Number)
+		if !validJSON5Number(string(n)) {
+			return nil, fmt.Errorf("json: invalid number literal %q", n)
+		}
+		return e.scalar(NodeTypeNumber, TokenNumber, string(n)), nil
+	}
+
 	if m, ok := marshaler(v); ok {
 		b, err := m.MarshalJSON()
 		if err != nil {
 			return nil, err
 		}
+		if !e.escapeHTMLDisabled {
+			var escaped bytes.Buffer
+			HTMLEscape(&escaped, b)
+			b = escaped.Bytes()
+		}
 		d := NewDecoder(bytes.NewReader(b))
+		if e.AllowJSON5Numbers || e.AllowIdentifierKeys {
+			d = NewJSON5Decoder(bytes.NewReader(b))
+		}
 		meta, err := d.DecodeMeta()
 		if err != nil {
 			return nil, err
@@ -185,7 +226,7 @@ func (e *Encoder) mapValue(v reflect.Value, depth int) (*node, error) {
 			e.token(TokenComma, ",")
 		}
 		e.newline(depth + 1)
-		keyNode := e.scalar(NodeTypeString, TokenString, e.quoteString(key))
+		keyNode := e.objectKey(key)
 		e.token(TokenColon, ":")
 		e.fieldSpace()
 		valueNode, err := e.value(v.MapIndex(keyValues[key]), depth+1)
@@ -210,7 +251,7 @@ func (e *Encoder) structValue(v reflect.Value, depth int) (*node, error) {
 			e.token(TokenComma, ",")
 		}
 		e.newline(depth + 1)
-		keyNode := e.scalar(NodeTypeString, TokenString, e.quoteString(field.Name))
+		keyNode := e.objectKey(field.Name)
 		e.token(TokenColon, ":")
 		e.fieldSpace()
 		fieldValue := field.Value
@@ -232,6 +273,13 @@ func (e *Encoder) structValue(v reflect.Value, depth int) (*node, error) {
 	}
 	n.End = e.token(TokenRightBrace, "}")
 	return n, nil
+}
+
+func (e *Encoder) objectKey(s string) *node {
+	if e.AllowIdentifierKeys && isJSON5Identifier(s) {
+		return e.scalar(NodeTypeString, TokenIdentifier, s)
+	}
+	return e.scalar(NodeTypeString, TokenString, e.quoteString(s))
 }
 
 func encodedValueString(v reflect.Value) (string, error) {

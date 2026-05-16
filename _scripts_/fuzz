@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fuzztime="${1:-10s}"
+shift || true
+
+found=0
+
+while IFS= read -r pkg; do
+	while IFS= read -r fuzz; do
+		found=1
+		printf '\n==> %s %s (%s)\n' "$pkg" "$fuzz" "$fuzztime"
+		go test "$pkg" -run='^$' -fuzz="^${fuzz}$" -fuzztime="$fuzztime" "$@"
+	done < <(go test "$pkg" -list '^Fuzz' | sed -n '/^Fuzz/p')
+done < <(go list ./...)
+
+if [[ "$found" -eq 0 ]]; then
+	echo "no fuzz tests found"
+fi

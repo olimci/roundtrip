@@ -18,6 +18,7 @@
 - [ ] Better Comment APIs
 - [ ] Object/array field tools
   - [ ] Moving/positioning things.
+- [x] JSON5 support
 
 ## Potential Issues
 

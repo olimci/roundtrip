@@ -9,6 +9,9 @@ import (
 var (
 	ErrUnexpectedEOF   = errors.New("unexpected EOF")
 	ErrUnexpectedToken = errors.New("unexpected token")
+	ErrInvalidString   = errors.New("invalid string")
+	ErrInvalidNumber   = errors.New("invalid number")
+	ErrInvalidSpace    = errors.New("invalid whitespace")
 )
 
 type ParseError struct {

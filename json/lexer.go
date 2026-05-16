@@ -97,11 +97,11 @@ func (l *lexer) scanToken() token {
 		if l.assert("/*") {
 			return l.consumeMultiLineComment()
 		}
-	case '"':
-		return l.consumeString()
-	case '-':
+	case '"', '\'':
+		return l.consumeString(r)
+	case '-', '+', '.':
 		return l.consumeNumber()
-	case '\n', '\r':
+	case '\n', '\r', '\u2028', '\u2029':
 		return l.consumeNewline()
 	}
 
@@ -110,7 +110,7 @@ func (l *lexer) scanToken() token {
 		return l.consumeWhitespace()
 	case unicode.IsNumber(r):
 		return l.consumeNumber()
-	case unicode.IsLetter(r):
+	case unicode.IsLetter(r) || r == '_' || r == '$':
 		return l.consumeIdentifier()
 	}
 
@@ -171,7 +171,7 @@ func (l *lexer) consumeNewline() token {
 			return token{Type: TokenEOF}
 		}
 
-		if r != '\n' && r != '\r' {
+		if !isNewline(r) {
 			_ = l.unreadRune()
 			break
 		}
@@ -222,13 +222,13 @@ func (l *lexer) consumeMultiLineComment() token {
 	}
 }
 
-func (l *lexer) consumeString() token {
+func (l *lexer) consumeString(quote rune) token {
 	lit := ""
 
 	for {
 		r, err := l.readRune()
 		if err != nil {
-			return token{Type: TokenIllegal, Literal: lit}
+			return token{Type: TokenString, Literal: lit}
 		}
 
 		lit += string(r)
@@ -236,34 +236,13 @@ func (l *lexer) consumeString() token {
 		if r == '\\' {
 			r, err := l.readRune()
 			if err != nil {
-				return token{Type: TokenIllegal, Literal: lit}
+				return token{Type: TokenString, Literal: lit}
 			}
 			lit += string(r)
-
-			switch r {
-			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
-			case 'u':
-				for range 4 {
-					r, err := l.readRune()
-					if err != nil {
-						return token{Type: TokenIllegal, Literal: lit}
-					}
-					lit += string(r)
-					if !isHex(r) {
-						return token{Type: TokenIllegal, Literal: lit}
-					}
-				}
-			default:
-				return token{Type: TokenIllegal, Literal: lit}
-			}
 			continue
 		}
 
-		if r < 0x20 {
-			return token{Type: TokenIllegal, Literal: lit}
-		}
-
-		if r == '"' && len(lit) > 1 {
+		if r == quote && len(lit) > 1 {
 			return token{Type: TokenString, Literal: lit}
 		}
 	}
@@ -275,18 +254,12 @@ func (l *lexer) consumeNumber() token {
 	for {
 		r, err := l.readRune()
 		if err != nil {
-			if validNumber(lit) {
-				return token{Type: TokenNumber, Literal: lit}
-			}
-			return token{Type: TokenIllegal, Literal: lit}
+			return token{Type: TokenNumber, Literal: lit}
 		}
 
 		if isNumberDelimiter(r) {
 			_ = l.unreadRune()
-			if validNumber(lit) {
-				return token{Type: TokenNumber, Literal: lit}
-			}
-			return token{Type: TokenIllegal, Literal: lit}
+			return token{Type: TokenNumber, Literal: lit}
 		}
 
 		lit += string(r)
@@ -302,7 +275,7 @@ func (l *lexer) consumeIdentifier() token {
 			return token{Type: TokenIdentifier, Literal: lit}
 		}
 
-		if !unicode.IsLetter(r) && !unicode.IsNumber(r) {
+		if !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '_' && r != '$' {
 			_ = l.unreadRune()
 			return token{Type: TokenIdentifier, Literal: lit}
 		}

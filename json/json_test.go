@@ -227,6 +227,40 @@ func TestOmitEmptyAndOmitZeroParity(t *testing.T) {
 	}
 }
 
+func TestMarshalerEscapesHTMLParity(t *testing.T) {
+	v := customJSON{Value: "<&>"}
+
+	got, gotErr := Marshal(v)
+	want, wantErr := stdjson.Marshal(v)
+	if (gotErr != nil) != (wantErr != nil) {
+		t.Fatalf("Marshal error mismatch:\ngot  %v\nwant %v", gotErr, wantErr)
+	}
+	if gotErr != nil {
+		return
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal mismatch:\ngot  %s\nwant %s", got, want)
+	}
+
+	var gotBuf bytes.Buffer
+	gotEncoder := NewEncoder(&gotBuf)
+	gotEncoder.SetEscapeHTML(false)
+	if err := gotEncoder.Encode(v); err != nil {
+		t.Fatalf("Encode with disabled HTML escaping: %v", err)
+	}
+
+	var wantBuf bytes.Buffer
+	wantEncoder := stdjson.NewEncoder(&wantBuf)
+	wantEncoder.SetEscapeHTML(false)
+	if err := wantEncoder.Encode(v); err != nil {
+		t.Fatalf("stdlib Encode with disabled HTML escaping: %v", err)
+	}
+
+	if !bytes.Equal(gotBuf.Bytes(), bytes.TrimSuffix(wantBuf.Bytes(), []byte("\n"))) {
+		t.Fatalf("Encode mismatch with disabled HTML escaping:\ngot  %s\nwant %s", gotBuf.Bytes(), wantBuf.Bytes())
+	}
+}
+
 func TestDecoderDisallowUnknownFields(t *testing.T) {
 	var accepted promotedOuter
 	d := NewDecoder(bytes.NewReader([]byte(`{"ID":7,"renamed":"inner","PtrName":"ptr","Own":"own"}`)))

@@ -21,6 +21,7 @@ var (
 type Meta struct {
 	SST    sst.SST[TokenType, NodeType]
 	Indent string
+	json5  bool
 }
 
 func (m *Meta) node(n *node) Node {
@@ -61,7 +62,7 @@ func (m *Meta) Leaves() iter.Seq[Node] {
 }
 
 func (n Node) Decode(v any) error {
-	return decodeInto(n.meta, n.node, v, decodeOptions{})
+	return decodeInto(n.meta, n.node, v, decodeOptions{json5: n.meta.json5})
 }
 
 func (n Node) Replace(v any) error {
@@ -204,12 +205,19 @@ func (n Node) objectField(name string) (*node, *node, bool) {
 func (n Node) objectFieldIndex(name string) (int, *node, *node, bool) {
 	for i := 0; i < len(n.node.Children); i += 2 {
 		key := n.node.Children[i]
-		keyName, err := strconv.Unquote(key.Start.Value.Literal)
+		keyName, err := decodeKeyLiteral(key)
 		if err == nil && keyName == name {
 			return i / 2, key, n.node.Children[i+1], true
 		}
 	}
 	return 0, nil, nil, false
+}
+
+func decodeKeyLiteral(key *node) (string, error) {
+	if key.Start.Value.Type == TokenIdentifier {
+		return key.Start.Value.Literal, nil
+	}
+	return strconv.Unquote(key.Start.Value.Literal)
 }
 
 func (n Node) lastChild() *node {

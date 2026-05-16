@@ -132,10 +132,7 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 }
 
 func decodeFormatMeta(src []byte) (*Meta, error) {
-	d := NewDecoder(bytes.NewReader(src))
-	d.AllowComments = true
-	d.AllowTrailingComma = true
-	return d.DecodeMeta()
+	return NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
 }
 
 func formatTokens(m *Meta) []token {

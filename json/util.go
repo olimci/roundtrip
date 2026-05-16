@@ -1,7 +1,30 @@
 package json
 
+import "unicode"
+
 func isHorizontalSpace(r rune) bool {
+	return unicode.IsSpace(r) && !isNewline(r)
+}
+
+func isStrictHorizontalSpace(r rune) bool {
 	return r == ' ' || r == '\t'
+}
+
+func isNewline(r rune) bool {
+	return r == '\n' || r == '\r' || r == '\u2028' || r == '\u2029'
+}
+
+func isStrictNewline(r rune) bool {
+	return r == '\n' || r == '\r'
+}
+
+func validStrictSpace(s string) bool {
+	for _, r := range s {
+		if !isStrictHorizontalSpace(r) && !isStrictNewline(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func isNumberDelimiter(r rune) bool {
@@ -9,7 +32,7 @@ func isNumberDelimiter(r rune) bool {
 	case ',', ']', '}', ':', '[', '{', '/':
 		return true
 	default:
-		return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+		return isHorizontalSpace(r) || isNewline(r)
 	}
 }
 
@@ -71,4 +94,23 @@ func isHex(r rune) bool {
 	return ('0' <= r && r <= '9') ||
 		('a' <= r && r <= 'f') ||
 		('A' <= r && r <= 'F')
+}
+
+func isJSON5Identifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if r == '$' || r == '_' || unicode.IsLetter(r) {
+				continue
+			}
+			return false
+		}
+		if r == '$' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
 }

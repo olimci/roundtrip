@@ -4,6 +4,7 @@ import (
 	"encoding"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 type decodeOptions struct {
 	useNumber       bool
 	disallowUnknown bool
+	json5           bool
 }
 
 func decodeInto(m *Meta, n *node, v any, opts decodeOptions) error {
@@ -46,7 +48,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 	}
 	if n.Type == NodeTypeString {
 		if u, ok := textUnmarshaler(v); ok {
-			s, err := decodeString(m, n)
+			s, err := decodeString(m, n, opts)
 			if err != nil {
 				return err
 			}
@@ -92,7 +94,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		if n.Type != NodeTypeString {
 			return typeError(n, v.Type())
 		}
-		value, err := decodeString(m, n)
+		value, err := decodeString(m, n, opts)
 		if err != nil {
 			return err
 		}
@@ -102,7 +104,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		if n.Type != NodeTypeNumber {
 			return typeError(n, v.Type())
 		}
-		value, err := strconv.ParseInt(n.Start.Value.Literal, 10, v.Type().Bits())
+		value, err := parseIntLiteral(n.Start.Value.Literal, v.Type().Bits(), opts)
 		if err != nil {
 			return err
 		}
@@ -112,7 +114,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		if n.Type != NodeTypeNumber {
 			return typeError(n, v.Type())
 		}
-		value, err := strconv.ParseUint(n.Start.Value.Literal, 10, v.Type().Bits())
+		value, err := parseUintLiteral(n.Start.Value.Literal, v.Type().Bits(), opts)
 		if err != nil {
 			return err
 		}
@@ -122,7 +124,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		if n.Type != NodeTypeNumber {
 			return typeError(n, v.Type())
 		}
-		value, err := strconv.ParseFloat(n.Start.Value.Literal, v.Type().Bits())
+		value, err := parseFloatLiteral(n.Start.Value.Literal, v.Type().Bits(), opts)
 		if err != nil {
 			return err
 		}
@@ -146,7 +148,7 @@ func decodeAny(m *Meta, n *node, opts decodeOptions) (any, error) {
 	case NodeTypeObject:
 		value := make(map[string]any, len(n.Children)/2)
 		for keyNode, valueNode := range objectFields(n) {
-			key, err := decodeString(m, keyNode)
+			key, err := decodeString(m, keyNode, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -168,12 +170,12 @@ func decodeAny(m *Meta, n *node, opts decodeOptions) (any, error) {
 		}
 		return value, nil
 	case NodeTypeString:
-		return decodeString(m, n)
+		return decodeString(m, n, opts)
 	case NodeTypeNumber:
 		if opts.useNumber {
 			return Number(n.Start.Value.Literal), nil
 		}
-		return strconv.ParseFloat(n.Start.Value.Literal, 64)
+		return parseFloatLiteral(n.Start.Value.Literal, 64, opts)
 	case NodeTypeBool:
 		return strconv.ParseBool(n.Start.Value.Literal)
 	case NodeTypeNull:
@@ -185,7 +187,7 @@ func decodeAny(m *Meta, n *node, opts decodeOptions) (any, error) {
 
 func decodeSlice(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 	if v.Type().Elem().Kind() == reflect.Uint8 && n.Type == NodeTypeString {
-		s, err := decodeString(m, n)
+		s, err := decodeString(m, n, opts)
 		if err != nil {
 			return err
 		}
@@ -238,12 +240,12 @@ func decodeMap(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 	}
 
 	for keyNode, valueNode := range objectFields(n) {
-		key, err := decodeString(m, keyNode)
+		key, err := decodeString(m, keyNode, opts)
 		if err != nil {
 			return err
 		}
 
-		mapKey, err := decodeMapKey(key, v.Type().Key())
+		mapKey, err := decodeMapKey(key, v.Type().Key(), opts)
 		if err != nil {
 			return err
 		}
@@ -264,7 +266,7 @@ func decodeStruct(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 
 	fields := structFieldIndexes(v.Type())
 	for keyNode, valueNode := range objectFields(n) {
-		key, err := decodeString(m, keyNode)
+		key, err := decodeString(m, keyNode, opts)
 		if err != nil {
 			return err
 		}
@@ -282,7 +284,7 @@ func decodeStruct(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 			return fmt.Errorf("json: cannot set embedded pointer for field %q", field.Name)
 		}
 		if field.Options.Quoted {
-			decoded, err := quotedNode(m, valueNode)
+			decoded, err := quotedNode(m, valueNode, opts)
 			if err != nil {
 				return err
 			}
@@ -322,15 +324,19 @@ func textUnmarshaler(v reflect.Value) (encoding.TextUnmarshaler, bool) {
 	return nil, false
 }
 
-func quotedNode(m *Meta, n *node) (*Meta, error) {
-	s, err := decodeString(m, n)
+func quotedNode(m *Meta, n *node, opts decodeOptions) (*Meta, error) {
+	s, err := decodeString(m, n, opts)
 	if err != nil {
 		return nil, err
 	}
-	return NewDecoder(strings.NewReader(s)).DecodeMeta()
+	d := NewDecoder(strings.NewReader(s))
+	if opts.json5 {
+		d = NewJSON5Decoder(strings.NewReader(s))
+	}
+	return d.DecodeMeta()
 }
 
-func decodeMapKey(s string, typ reflect.Type) (reflect.Value, error) {
+func decodeMapKey(s string, typ reflect.Type, opts decodeOptions) (reflect.Value, error) {
 	v := reflect.New(typ).Elem()
 	if u, ok := textUnmarshaler(v); ok {
 		if err := u.UnmarshalText([]byte(s)); err != nil {
@@ -342,13 +348,13 @@ func decodeMapKey(s string, typ reflect.Type) (reflect.Value, error) {
 	case reflect.String:
 		v.SetString(s)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i, err := strconv.ParseInt(s, 10, typ.Bits())
+		i, err := parseIntLiteral(s, typ.Bits(), opts)
 		if err != nil {
 			return reflect.Value{}, err
 		}
 		v.SetInt(i)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		u, err := strconv.ParseUint(s, 10, typ.Bits())
+		u, err := parseUintLiteral(s, typ.Bits(), opts)
 		if err != nil {
 			return reflect.Value{}, err
 		}
@@ -363,16 +369,39 @@ func typeError(n *node, typ reflect.Type) error {
 	return &UnmarshalTypeError{Value: strings.ToLower(n.Type.String()), Type: typ, Offset: int64(n.Start.Value.Position.Offset)}
 }
 
-func decodeString(m *Meta, n *node) (string, error) {
+func decodeString(m *Meta, n *node, opts decodeOptions) (string, error) {
 	if n.Type != NodeTypeString {
 		return "", fmt.Errorf("cannot decode %v into string", n.Type)
 	}
-	return unquoteJSONString(n.Start.Value.Literal)
+	if n.Start.Value.Type == TokenIdentifier {
+		return n.Start.Value.Literal, nil
+	}
+	return unquoteString(n.Start.Value.Literal, opts.json5)
 }
 
 func unquoteJSONString(s string) (string, error) {
+	return unquoteStringOptions(s, stringOptions{})
+}
+
+func unquoteString(s string, json5 bool) (string, error) {
+	return unquoteStringOptions(s, stringOptions{
+		allowSingleQuote:      json5,
+		allowJSON5Escapes:     json5,
+		allowLineContinuation: json5,
+	})
+}
+
+type stringOptions struct {
+	allowSingleQuote      bool
+	allowJSON5Escapes     bool
+	allowLineContinuation bool
+}
+
+func unquoteStringOptions(s string, opts stringOptions) (string, error) {
 	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
-		return "", fmt.Errorf("invalid JSON string %q", s)
+		if !opts.allowSingleQuote || len(s) < 2 || s[0] != '\'' || s[len(s)-1] != '\'' {
+			return "", fmt.Errorf("invalid JSON string %q", s)
+		}
 	}
 
 	var b strings.Builder
@@ -385,8 +414,21 @@ func unquoteJSONString(s string) (string, error) {
 				return "", fmt.Errorf("invalid JSON string escape %q", s)
 			}
 
+			if opts.allowLineContinuation {
+				if next, ok := json5LineContinuation(s, i); ok {
+					i = next
+					continue
+				}
+			}
+
 			switch c = s[i]; c {
 			case '"', '\\', '/':
+				b.WriteByte(c)
+				i++
+			case '\'':
+				if !opts.allowJSON5Escapes {
+					return "", fmt.Errorf("invalid JSON string escape %q", s)
+				}
 				b.WriteByte(c)
 				i++
 			case 'b':
@@ -395,6 +437,28 @@ func unquoteJSONString(s string) (string, error) {
 			case 'f':
 				b.WriteByte('\f')
 				i++
+			case 'v':
+				if !opts.allowJSON5Escapes {
+					return "", fmt.Errorf("invalid JSON string escape %q", s)
+				}
+				b.WriteByte('\v')
+				i++
+			case '0':
+				if !opts.allowJSON5Escapes {
+					return "", fmt.Errorf("invalid JSON string escape %q", s)
+				}
+				b.WriteByte(0)
+				i++
+			case 'x':
+				if !opts.allowJSON5Escapes || i+2 >= len(s)-1 {
+					return "", fmt.Errorf("invalid JSON string escape %q", s)
+				}
+				r, err := unquoteJSONHexEscape(s, i+1)
+				if err != nil {
+					return "", err
+				}
+				b.WriteRune(r)
+				i += 3
 			case 'n':
 				b.WriteByte('\n')
 				i++
@@ -468,4 +532,176 @@ func unquoteJSONUnicodeEscape(s string, i int) (rune, error) {
 		}
 	}
 	return r, nil
+}
+
+func unquoteJSONHexEscape(s string, i int) (rune, error) {
+	if i+2 > len(s) {
+		return 0, fmt.Errorf("invalid JSON hex escape %q", s)
+	}
+	var r rune
+	for _, c := range s[i : i+2] {
+		r <<= 4
+		switch {
+		case '0' <= c && c <= '9':
+			r += c - '0'
+		case 'a' <= c && c <= 'f':
+			r += c - 'a' + 10
+		case 'A' <= c && c <= 'F':
+			r += c - 'A' + 10
+		default:
+			return 0, fmt.Errorf("invalid JSON hex escape %q", s)
+		}
+	}
+	return r, nil
+}
+
+func json5LineContinuation(s string, i int) (int, bool) {
+	if i >= len(s)-1 {
+		return i, false
+	}
+	switch s[i] {
+	case '\n':
+		return i + 1, true
+	case '\r':
+		if i+1 < len(s)-1 && s[i+1] == '\n' {
+			return i + 2, true
+		}
+		return i + 1, true
+	}
+	r, size := utf8.DecodeRuneInString(s[i : len(s)-1])
+	switch r {
+	case '\u2028', '\u2029':
+		return i + size, true
+	default:
+		return i, false
+	}
+}
+
+func validJSON5Number(s string) bool {
+	if s == "NaN" || s == "+NaN" || s == "-NaN" ||
+		s == "Infinity" || s == "+Infinity" || s == "-Infinity" {
+		return true
+	}
+
+	start := 0
+	if strings.HasPrefix(s, "+") || strings.HasPrefix(s, "-") {
+		start = 1
+		if start == len(s) {
+			return false
+		}
+	}
+	if len(s[start:]) > 2 && s[start] == '0' && (s[start+1] == 'x' || s[start+1] == 'X') {
+		if start+2 == len(s) {
+			return false
+		}
+		for _, r := range s[start+2:] {
+			if !isHex(r) {
+				return false
+			}
+		}
+		return true
+	}
+	if validNumber(strings.TrimPrefix(s, "+")) {
+		return true
+	}
+	return validJSON5Decimal(s)
+}
+
+func validJSON5Decimal(s string) bool {
+	i := 0
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	if i == len(s) {
+		return false
+	}
+
+	digitsBefore := 0
+	for i < len(s) && '0' <= s[i] && s[i] <= '9' {
+		digitsBefore++
+		i++
+	}
+
+	hasDot := i < len(s) && s[i] == '.'
+	if hasDot {
+		i++
+	}
+
+	digitsAfter := 0
+	for i < len(s) && '0' <= s[i] && s[i] <= '9' {
+		digitsAfter++
+		i++
+	}
+
+	if digitsBefore == 0 && digitsAfter == 0 {
+		return false
+	}
+	if digitsBefore > 1 {
+		signOffset := 0
+		if s[0] == '+' || s[0] == '-' {
+			signOffset = 1
+		}
+		if s[signOffset] == '0' {
+			return false
+		}
+	}
+
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		expStart := i
+		for i < len(s) && '0' <= s[i] && s[i] <= '9' {
+			i++
+		}
+		if i == expStart {
+			return false
+		}
+	}
+	return i == len(s)
+}
+
+func parseIntLiteral(s string, bits int, opts decodeOptions) (int64, error) {
+	if opts.json5 {
+		return strconv.ParseInt(strings.TrimPrefix(s, "+"), 0, bits)
+	}
+	return strconv.ParseInt(s, 10, bits)
+}
+
+func parseUintLiteral(s string, bits int, opts decodeOptions) (uint64, error) {
+	if opts.json5 {
+		return strconv.ParseUint(strings.TrimPrefix(s, "+"), 0, bits)
+	}
+	return strconv.ParseUint(s, 10, bits)
+}
+
+func parseFloatLiteral(s string, bits int, opts decodeOptions) (float64, error) {
+	if !opts.json5 {
+		return strconv.ParseFloat(s, bits)
+	}
+	switch s {
+	case "NaN", "+NaN", "-NaN":
+		return math.NaN(), nil
+	case "Infinity", "+Infinity":
+		return math.Inf(1), nil
+	case "-Infinity":
+		return math.Inf(-1), nil
+	}
+	start := 0
+	if strings.HasPrefix(s, "+") || strings.HasPrefix(s, "-") {
+		start = 1
+	}
+	if len(s[start:]) > 2 && s[start] == '0' && (s[start+1] == 'x' || s[start+1] == 'X') {
+		u, err := strconv.ParseUint(s[start+2:], 16, 64)
+		if err != nil {
+			return 0, err
+		}
+		f := float64(u)
+		if strings.HasPrefix(s, "-") {
+			f = -f
+		}
+		return f, nil
+	}
+	return strconv.ParseFloat(s, bits)
 }
