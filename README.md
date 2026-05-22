@@ -1,6 +1,6 @@
-# roundtrip
+# roundtrip (WIP)
 
-This repository contains a collection of roundtrippable parsers. Currently, it only include JSON support.
+This repository contains a collection of roundtrippable parsers. Currently, it only includes JSON support.
 
 ## method
 
