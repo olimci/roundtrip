@@ -35,7 +35,9 @@ type NodeType int8
 const (
 	NodeTypeIllegal NodeType = iota
 	NodeTypeObject
+	NodeTypeObjectField
 	NodeTypeArray
+	NodeTypeArrayElement
 	NodeTypeString
 	NodeTypeNumber
 	NodeTypeBool
@@ -53,7 +55,7 @@ func (t TokenType) String() string {
 }
 
 var nodeSymbols = []string{
-	"ILLEGAL", "OBJECT", "ARRAY", "STRING", "NUMBER", "BOOL", "NULL",
+	"ILLEGAL", "OBJECT", "OBJECT_FIELD", "ARRAY", "ARRAY_ELEMENT", "STRING", "NUMBER", "BOOL", "NULL",
 }
 
 var tokenSymbols = []string{

@@ -18,7 +18,7 @@ func Unmarshal(data []byte, v any) (*Meta, error) {
 	return m, decodeInto(m, m.SST.Root, v, decodeOptions{
 		useNumber:       d.useNumber,
 		disallowUnknown: d.disallowUnknown,
-		json5:           m.json5,
+		syntax:          m.syntax,
 	})
 }
 
@@ -30,34 +30,23 @@ func NewDecoder(r io.Reader) *Decoder {
 
 func NewJSONCDecoder(r io.Reader) *Decoder {
 	d := NewDecoder(r)
-	d.SetAllowComments(true)
-	d.SetAllowTrailingComma(true)
+	d.SyntaxOptions = JSONCSyntaxOptions()
 	return d
 }
 
 func NewJSON5Decoder(r io.Reader) *Decoder {
-	d := NewJSONCDecoder(r)
-	d.SetAllowIdentifierKeys(true)
-	d.SetAllowSingleQuotedStrings(true)
-	d.SetAllowJSON5Numbers(true)
-	d.SetAllowJSON5Whitespace(true)
-	d.SetAllowStringLineContinuations(true)
+	d := NewDecoder(r)
+	d.SyntaxOptions = JSON5SyntaxOptions()
 	return d
 }
 
 type Decoder struct {
-	l                            *lexer
-	tokens                       *list.List[token]
-	currentElem                  *list.Elem[token]
-	AllowComments                bool
-	AllowTrailingComma           bool
-	AllowIdentifierKeys          bool
-	AllowSingleQuotedStrings     bool
-	AllowJSON5Numbers            bool
-	AllowJSON5Whitespace         bool
-	AllowStringLineContinuations bool
-	useNumber                    bool
-	disallowUnknown              bool
+	l           *lexer
+	tokens      *list.List[token]
+	currentElem *list.Elem[token]
+	SyntaxOptions
+	useNumber       bool
+	disallowUnknown bool
 }
 
 func (d *Decoder) DecodeMeta() (*Meta, error) {
@@ -65,7 +54,7 @@ func (d *Decoder) DecodeMeta() (*Meta, error) {
 }
 
 func (d *Decoder) decodeMeta(requireEOF bool) (*Meta, error) {
-	d.tokens = list.New[token]()
+	d.tokens = new(list.List[token])
 	d.currentElem = nil
 
 	root, err := d.parse()
@@ -85,7 +74,7 @@ func (d *Decoder) decodeMeta(requireEOF bool) (*Meta, error) {
 
 	return &Meta{
 		Indent: detectIndent(root),
-		json5:  d.json5(),
+		syntax: d.SyntaxOptions,
 		SST: sst.SST[TokenType, NodeType]{
 			Tokens: d.tokens,
 			Root:   root,
@@ -104,7 +93,7 @@ func (d *Decoder) Decode(v any) (*Meta, error) {
 	return m, decodeInto(m, m.SST.Root, v, decodeOptions{
 		useNumber:       d.useNumber,
 		disallowUnknown: d.disallowUnknown,
-		json5:           m.json5,
+		syntax:          m.syntax,
 	})
 }
 
@@ -116,38 +105,10 @@ func (d *Decoder) DisallowUnknownFields() {
 	d.disallowUnknown = true
 }
 
-func (d *Decoder) SetAllowComments(on bool) {
-	d.AllowComments = on
-}
-
-func (d *Decoder) SetAllowTrailingComma(on bool) {
-	d.AllowTrailingComma = on
-}
-
-func (d *Decoder) SetAllowIdentifierKeys(on bool) {
-	d.AllowIdentifierKeys = on
-}
-
-func (d *Decoder) SetAllowSingleQuotedStrings(on bool) {
-	d.AllowSingleQuotedStrings = on
-}
-
-func (d *Decoder) SetAllowJSON5Numbers(on bool) {
-	d.AllowJSON5Numbers = on
-}
-
-func (d *Decoder) SetAllowJSON5Whitespace(on bool) {
-	d.AllowJSON5Whitespace = on
-}
-
-func (d *Decoder) SetAllowStringLineContinuations(on bool) {
-	d.AllowStringLineContinuations = on
-}
-
 func (d *Decoder) More() bool {
 	for {
 		t := d.l.peekToken()
-		if t.Type == TokenWhitespace || t.Type == TokenNewline || (t.Type == TokenComment && d.AllowComments) {
+		if t.Type == TokenWhitespace || t.Type == TokenNewline || (t.Type == TokenComment && d.commentAllowed(t)) {
 			_ = d.l.next()
 			continue
 		}
@@ -217,7 +178,7 @@ func (d *Decoder) parseObject() (*node, error) {
 		if t.Type == TokenEOF {
 			return nil, ParseError{ErrUnexpectedEOF, t}
 		}
-		if t.Type != TokenString && !(d.AllowIdentifierKeys && t.Type == TokenIdentifier) {
+		if t.Type != TokenString && !(d.ECMAScriptIdentifiers && t.Type == TokenIdentifier) {
 			return nil, ParseError{ErrUnexpectedToken, t}
 		}
 
@@ -242,7 +203,9 @@ func (d *Decoder) parseObject() (*node, error) {
 		if err != nil {
 			return nil, err
 		}
-		appendObjectField(n, key, value)
+		start := d.tokens.InsertBefore(key.Start, token{Type: TokenAnchor})
+		end := d.tokens.InsertAfter(value.End, token{Type: TokenAnchor})
+		n.Children = append(n.Children, objectFieldNode(key, value, start, end))
 
 		if err := d.consume(); err != nil {
 			return nil, err
@@ -259,7 +222,7 @@ func (d *Decoder) parseObject() (*node, error) {
 			}
 			t = d.l.peekToken()
 			if t.Type == TokenRightBrace {
-				if !d.AllowTrailingComma {
+				if !d.TrailingCommas {
 					return nil, ParseError{ErrUnexpectedToken, t}
 				}
 				_ = d.next()
@@ -301,7 +264,9 @@ func (d *Decoder) parseArray() (*node, error) {
 		if err != nil {
 			return nil, err
 		}
-		n.Children = append(n.Children, value)
+		start := d.tokens.InsertBefore(value.Start, token{Type: TokenAnchor})
+		end := d.tokens.InsertAfter(value.End, token{Type: TokenAnchor})
+		n.Children = append(n.Children, arrayElementNode(value, start, end))
 
 		if err := d.consume(); err != nil {
 			return nil, err
@@ -318,7 +283,7 @@ func (d *Decoder) parseArray() (*node, error) {
 			}
 			t = d.l.peekToken()
 			if t.Type == TokenRightBracket {
-				if !d.AllowTrailingComma {
+				if !d.TrailingCommas {
 					return nil, ParseError{ErrUnexpectedToken, t}
 				}
 				_ = d.next()
@@ -373,7 +338,7 @@ func (d *Decoder) parseIdentifier() (*node, error) {
 	case "null":
 		return d.parseScalar(NodeTypeNull)
 	default:
-		if d.AllowJSON5Numbers && validJSON5Number(t.Literal) {
+		if validNumberWithOptions(t.Literal, d.SyntaxOptions) {
 			return d.parseScalar(NodeTypeNumber)
 		}
 		return nil, ParseError{ErrUnexpectedToken, t}
@@ -383,8 +348,8 @@ func (d *Decoder) parseIdentifier() (*node, error) {
 func (d *Decoder) consume() error {
 	for {
 		t := d.l.peekToken()
-		if t.Type == TokenWhitespace || t.Type == TokenNewline || (t.Type == TokenComment && d.AllowComments) {
-			if (t.Type == TokenWhitespace || t.Type == TokenNewline) && !d.AllowJSON5Whitespace && !validStrictSpace(t.Literal) {
+		if t.Type == TokenWhitespace || t.Type == TokenNewline || (t.Type == TokenComment && d.commentAllowed(t)) {
+			if (t.Type == TokenWhitespace || t.Type == TokenNewline) && !d.AdditionalWhitespace && !validStrictSpace(t.Literal) {
 				return ParseError{ErrInvalidSpace, t}
 			}
 			_ = d.next()
@@ -406,9 +371,9 @@ func (d *Decoder) validateString(t token) error {
 		return ParseError{ErrUnexpectedToken, t}
 	}
 	if _, err := unquoteStringOptions(t.Literal, stringOptions{
-		allowSingleQuote:      d.AllowSingleQuotedStrings,
-		allowJSON5Escapes:     d.AllowSingleQuotedStrings || d.AllowStringLineContinuations,
-		allowLineContinuation: d.AllowStringLineContinuations,
+		allowSingleQuote:      d.SingleQuotedStrings,
+		allowCharacterEscapes: d.StringCharacterEscapes,
+		allowLineContinuation: d.MultilineStrings,
 	}); err != nil {
 		return ParseError{ErrInvalidString, t}
 	}
@@ -419,24 +384,14 @@ func (d *Decoder) validateNumber(t token) error {
 	if t.Type != TokenNumber && t.Type != TokenIdentifier {
 		return ParseError{ErrUnexpectedToken, t}
 	}
-	if d.AllowJSON5Numbers {
-		if validJSON5Number(t.Literal) {
-			return nil
-		}
-		return ParseError{ErrInvalidNumber, t}
-	}
-	if validNumber(t.Literal) {
+	if validNumberWithOptions(t.Literal, d.SyntaxOptions) {
 		return nil
 	}
 	return ParseError{ErrInvalidNumber, t}
 }
 
-func (d *Decoder) json5() bool {
-	return d.AllowIdentifierKeys ||
-		d.AllowSingleQuotedStrings ||
-		d.AllowJSON5Numbers ||
-		d.AllowJSON5Whitespace ||
-		d.AllowStringLineContinuations
+func (d *Decoder) commentAllowed(t token) bool {
+	return commentAllowed(t, d.SyntaxOptions)
 }
 
 func (d *Decoder) onlyConsumedTrivia() bool {
@@ -445,7 +400,7 @@ func (d *Decoder) onlyConsumedTrivia() bool {
 		case TokenWhitespace, TokenNewline:
 			continue
 		case TokenComment:
-			if d.AllowComments {
+			if d.commentAllowed(e.Value) {
 				continue
 			}
 		}

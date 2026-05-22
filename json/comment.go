@@ -3,6 +3,7 @@ package json
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/olimci/roundtrip/internal/list"
 )
@@ -11,6 +12,14 @@ var ErrInvalidComment = errors.New("invalid comment")
 
 type Comment struct {
 	elem *list.Elem[token]
+}
+
+type Comments []Comment
+
+type CommentSet struct {
+	Leading  Comments
+	Trailing Comments
+	Dangling Comments
 }
 
 type CommentError struct {
@@ -38,4 +47,37 @@ func (c Comment) ReplaceText(text string) error {
 	}
 	c.elem.Value.Literal = lit
 	return nil
+}
+
+func (cs Comments) First() (Comment, bool) {
+	if len(cs) == 0 {
+		return Comment{}, false
+	}
+	return cs[0], true
+}
+
+func (cs Comments) Text() string {
+	parts := make([]string, len(cs))
+	for i, c := range cs {
+		parts[i] = c.Text()
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (cs CommentSet) First() (Comment, bool) {
+	if c, ok := cs.Leading.First(); ok {
+		return c, true
+	}
+	if c, ok := cs.Dangling.First(); ok {
+		return c, true
+	}
+	return cs.Trailing.First()
+}
+
+func (cs CommentSet) Text() string {
+	comments := make(Comments, 0, len(cs.Leading)+len(cs.Trailing)+len(cs.Dangling))
+	comments = append(comments, cs.Leading...)
+	comments = append(comments, cs.Dangling...)
+	comments = append(comments, cs.Trailing...)
+	return comments.Text()
 }

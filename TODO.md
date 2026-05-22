@@ -8,7 +8,7 @@
   - [x] v2 feature parity with existing json libs
   - [ ] v3 extra features
 - [ ] TOML Support
-  - [ ] v0 stub surface
+  - [x] v0 stub surface
   - [ ] v1 roundtrip encoding/decoding toml
   - [ ] v2 feature parity with existing toml libs
   - [ ] v3 extra features 

@@ -111,3 +111,105 @@ func TestStrictDecoderRejectsJSON5Syntax(t *testing.T) {
 		}
 	}
 }
+
+func TestDecoderSyntaxOptionsStayFeatureSpecific(t *testing.T) {
+	var got struct {
+		N int `json:"n,string"`
+	}
+
+	d := NewDecoder(strings.NewReader(`{"n":"0x10"}`))
+	d.SingleQuotedStrings = true
+	if _, err := d.Decode(&got); err == nil {
+		t.Fatal("Decode accepted an extended number literal when only single-quoted strings were enabled")
+	}
+
+	d = NewDecoder(strings.NewReader(`{"n":"0x10"}`))
+	d.HexadecimalNumbers = true
+	if _, err := d.Decode(&got); err != nil {
+		t.Fatalf("Decode with extended number literals: %v", err)
+	}
+	if got.N != 16 {
+		t.Fatalf("N = %d", got.N)
+	}
+}
+
+func TestNumberSyntaxOptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		set   func(*Decoder)
+	}{
+		{
+			name:  "hexadecimal",
+			input: `{"n":0x10}`,
+			set:   func(d *Decoder) { d.HexadecimalNumbers = true },
+		},
+		{
+			name:  "leading decimal point",
+			input: `{"n":.5}`,
+			set:   func(d *Decoder) { d.LeadingOrTrailingDecimalPoints = true },
+		},
+		{
+			name:  "trailing decimal point",
+			input: `{"n":1.}`,
+			set:   func(d *Decoder) { d.LeadingOrTrailingDecimalPoints = true },
+		},
+		{
+			name:  "leading plus",
+			input: `{"n":+1}`,
+			set:   func(d *Decoder) { d.LeadingPlusSigns = true },
+		},
+		{
+			name:  "ieee 754",
+			input: `{"n":Infinity}`,
+			set:   func(d *Decoder) { d.IEEE754Numbers = true },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewDecoder(strings.NewReader(tt.input)).DecodeMeta(); err == nil {
+				t.Fatalf("strict decoder accepted %s", tt.input)
+			}
+
+			d := NewDecoder(strings.NewReader(tt.input))
+			tt.set(d)
+			if _, err := d.DecodeMeta(); err != nil {
+				t.Fatalf("decoder rejected %s with feature enabled: %v", tt.input, err)
+			}
+		})
+	}
+}
+
+func TestCommentSyntaxOptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		set   func(*Decoder)
+	}{
+		{
+			name:  "single-line",
+			input: "{// comment\n\"n\":1}",
+			set:   func(d *Decoder) { d.SingleLineComments = true },
+		},
+		{
+			name:  "multiline",
+			input: `{/* comment */"n":1}`,
+			set:   func(d *Decoder) { d.MultilineComments = true },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewDecoder(strings.NewReader(tt.input)).DecodeMeta(); err == nil {
+				t.Fatalf("strict decoder accepted %s", tt.input)
+			}
+
+			d := NewDecoder(strings.NewReader(tt.input))
+			tt.set(d)
+			if _, err := d.DecodeMeta(); err != nil {
+				t.Fatalf("decoder rejected %s with feature enabled: %v", tt.input, err)
+			}
+		})
+	}
+}

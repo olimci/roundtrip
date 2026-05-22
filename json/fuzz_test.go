@@ -303,8 +303,8 @@ func FuzzMetaMutations(f *testing.F) {
 					continue
 				}
 				n := nodes[g.intn(len(nodes))]
-				if err := n.AppendArrayValue(g.value(3)); err != nil {
-					t.Fatalf("AppendArrayValue failed: %v", err)
+				if err := n.InsertArrayValue(len(n.node.Children), g.value(3)); err != nil {
+					t.Fatalf("InsertArrayValue append failed: %v", err)
 				}
 			default:
 				nodes := metaNodesOfType(m, NodeTypeArray)
@@ -1147,10 +1147,18 @@ func metaValueNodes(m *Meta) []Node {
 		children := n.Children()
 		switch n.Type() {
 		case NodeTypeArray:
-			nodes = append(nodes, children...)
+			for _, child := range children {
+				value, ok := child.Value()
+				if ok {
+					nodes = append(nodes, value)
+				}
+			}
 		case NodeTypeObject:
-			for i := 1; i < len(children); i += 2 {
-				nodes = append(nodes, children[i])
+			for _, child := range children {
+				value, ok := child.Value()
+				if ok {
+					nodes = append(nodes, value)
+				}
 			}
 		}
 	}
@@ -1169,8 +1177,8 @@ func metaNodesOfType(m *Meta, typ NodeType) []Node {
 
 func objectFieldNames(n Node) []string {
 	var names []string
-	for i := 0; i+1 < len(n.node.Children); i += 2 {
-		name, err := decodeKeyLiteral(n.node.Children[i])
+	for _, field := range n.node.Children {
+		name, err := decodeKeyLiteral(objectFieldKey(field))
 		if err == nil {
 			names = append(names, name)
 		}

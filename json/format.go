@@ -12,7 +12,7 @@ func Valid(data []byte) bool {
 }
 
 func Compact(dst *bytes.Buffer, src []byte) error {
-	m, err := decodeFormatMeta(src)
+	m, err := NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
 	if err != nil {
 		return err
 	}
@@ -33,7 +33,7 @@ func Compact(dst *bytes.Buffer, src []byte) error {
 }
 
 func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
-	m, err := decodeFormatMeta(src)
+	m, err := NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
 	if err != nil {
 		return err
 	}
@@ -43,11 +43,11 @@ func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 		switch t.Type {
 		case TokenLeftBrace, TokenLeftBracket:
 			dst.WriteString(t.Literal)
-			if next, ok := nextFormatToken(tokens, i); ok && !isClosingToken(next.Type) {
+			if i+1 < len(tokens) && tokens[i+1].Type != TokenRightBrace && tokens[i+1].Type != TokenRightBracket {
 				writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i)+1)
 			}
 		case TokenRightBrace, TokenRightBracket:
-			if prev, ok := prevFormatToken(tokens, i); ok && !isOpeningToken(prev.Type) {
+			if i > 0 && tokens[i-1].Type != TokenLeftBrace && tokens[i-1].Type != TokenLeftBracket {
 				writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i)-1)
 			}
 			dst.WriteString(t.Literal)
@@ -55,9 +55,9 @@ func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 			dst.WriteString(": ")
 		case TokenComma:
 			dst.WriteByte(',')
-			if next, ok := nextFormatToken(tokens, i); ok && next.Type == TokenComment {
+			if i+1 < len(tokens) && tokens[i+1].Type == TokenComment {
 				dst.WriteByte(' ')
-			} else if ok && isClosingToken(next.Type) {
+			} else if i+1 < len(tokens) && (tokens[i+1].Type == TokenRightBrace || tokens[i+1].Type == TokenRightBracket) {
 				continue
 			} else {
 				writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i))
@@ -131,10 +131,6 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 	dst.Write(src[start:])
 }
 
-func decodeFormatMeta(src []byte) (*Meta, error) {
-	return NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
-}
-
 func formatTokens(m *Meta) []token {
 	tokens := []token{}
 	for t := range m.SST.Tokens.Values() {
@@ -159,28 +155,6 @@ func formatDepth(tokens []token, index int) int {
 		}
 	}
 	return depth
-}
-
-func nextFormatToken(tokens []token, index int) (token, bool) {
-	if index+1 >= len(tokens) {
-		return token{}, false
-	}
-	return tokens[index+1], true
-}
-
-func prevFormatToken(tokens []token, index int) (token, bool) {
-	if index == 0 {
-		return token{}, false
-	}
-	return tokens[index-1], true
-}
-
-func isOpeningToken(t TokenType) bool {
-	return t == TokenLeftBrace || t == TokenLeftBracket
-}
-
-func isClosingToken(t TokenType) bool {
-	return t == TokenRightBrace || t == TokenRightBracket
 }
 
 func writeIndentNewline(dst *bytes.Buffer, prefix, indent string, depth int) {

@@ -361,7 +361,3 @@ func quoteType(t reflect.Type) bool {
 		reflect.String,
 	}, t.Kind())
 }
-
-func quoteValue(v reflect.Value) bool {
-	return quoteType(v.Type())
-}

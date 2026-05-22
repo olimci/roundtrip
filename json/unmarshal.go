@@ -24,7 +24,7 @@ var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 type decodeOptions struct {
 	useNumber       bool
 	disallowUnknown bool
-	json5           bool
+	syntax          SyntaxOptions
 }
 
 func decodeInto(m *Meta, n *node, v any, opts decodeOptions) error {
@@ -146,7 +146,7 @@ func decodeValue(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 func decodeAny(m *Meta, n *node, opts decodeOptions) (any, error) {
 	switch n.Type {
 	case NodeTypeObject:
-		value := make(map[string]any, len(n.Children)/2)
+		value := make(map[string]any, len(n.Children))
 		for keyNode, valueNode := range objectFields(n) {
 			key, err := decodeString(m, keyNode, opts)
 			if err != nil {
@@ -162,7 +162,7 @@ func decodeAny(m *Meta, n *node, opts decodeOptions) (any, error) {
 	case NodeTypeArray:
 		value := make([]any, len(n.Children))
 		for i, child := range n.Children {
-			item, err := decodeAny(m, child, opts)
+			item, err := decodeAny(m, arrayElementValue(child), opts)
 			if err != nil {
 				return nil, err
 			}
@@ -204,7 +204,7 @@ func decodeSlice(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 
 	value := reflect.MakeSlice(v.Type(), len(n.Children), len(n.Children))
 	for i, child := range n.Children {
-		if err := decodeValue(m, child, value.Index(i), opts); err != nil {
+		if err := decodeValue(m, arrayElementValue(child), value.Index(i), opts); err != nil {
 			return err
 		}
 	}
@@ -221,7 +221,7 @@ func decodeArray(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		v.Index(i).SetZero()
 	}
 	for i, child := range n.Children[:min(len(n.Children), v.Len())] {
-		if err := decodeValue(m, child, v.Index(i), opts); err != nil {
+		if err := decodeValue(m, arrayElementValue(child), v.Index(i), opts); err != nil {
 			return err
 		}
 	}
@@ -236,7 +236,7 @@ func decodeMap(m *Meta, n *node, v reflect.Value, opts decodeOptions) error {
 		return fmt.Errorf("cannot decode object into %v", v.Type())
 	}
 	if v.IsNil() {
-		v.Set(reflect.MakeMapWithSize(v.Type(), len(n.Children)/2))
+		v.Set(reflect.MakeMapWithSize(v.Type(), len(n.Children)))
 	}
 
 	for keyNode, valueNode := range objectFields(n) {
@@ -330,9 +330,7 @@ func quotedNode(m *Meta, n *node, opts decodeOptions) (*Meta, error) {
 		return nil, err
 	}
 	d := NewDecoder(strings.NewReader(s))
-	if opts.json5 {
-		d = NewJSON5Decoder(strings.NewReader(s))
-	}
+	d.SyntaxOptions = opts.syntax
 	return d.DecodeMeta()
 }
 
@@ -376,24 +374,20 @@ func decodeString(m *Meta, n *node, opts decodeOptions) (string, error) {
 	if n.Start.Value.Type == TokenIdentifier {
 		return n.Start.Value.Literal, nil
 	}
-	return unquoteString(n.Start.Value.Literal, opts.json5)
+	return unquoteString(n.Start.Value.Literal, opts.syntax)
 }
 
-func unquoteJSONString(s string) (string, error) {
-	return unquoteStringOptions(s, stringOptions{})
-}
-
-func unquoteString(s string, json5 bool) (string, error) {
+func unquoteString(s string, syntax SyntaxOptions) (string, error) {
 	return unquoteStringOptions(s, stringOptions{
-		allowSingleQuote:      json5,
-		allowJSON5Escapes:     json5,
-		allowLineContinuation: json5,
+		allowSingleQuote:      syntax.SingleQuotedStrings,
+		allowCharacterEscapes: syntax.StringCharacterEscapes,
+		allowLineContinuation: syntax.MultilineStrings,
 	})
 }
 
 type stringOptions struct {
 	allowSingleQuote      bool
-	allowJSON5Escapes     bool
+	allowCharacterEscapes bool
 	allowLineContinuation bool
 }
 
@@ -426,7 +420,7 @@ func unquoteStringOptions(s string, opts stringOptions) (string, error) {
 				b.WriteByte(c)
 				i++
 			case '\'':
-				if !opts.allowJSON5Escapes {
+				if !opts.allowCharacterEscapes {
 					return "", fmt.Errorf("invalid JSON string escape %q", s)
 				}
 				b.WriteByte(c)
@@ -438,19 +432,19 @@ func unquoteStringOptions(s string, opts stringOptions) (string, error) {
 				b.WriteByte('\f')
 				i++
 			case 'v':
-				if !opts.allowJSON5Escapes {
+				if !opts.allowCharacterEscapes {
 					return "", fmt.Errorf("invalid JSON string escape %q", s)
 				}
 				b.WriteByte('\v')
 				i++
 			case '0':
-				if !opts.allowJSON5Escapes {
+				if !opts.allowCharacterEscapes {
 					return "", fmt.Errorf("invalid JSON string escape %q", s)
 				}
 				b.WriteByte(0)
 				i++
 			case 'x':
-				if !opts.allowJSON5Escapes || i+2 >= len(s)-1 {
+				if !opts.allowCharacterEscapes || i+2 >= len(s)-1 {
 					return "", fmt.Errorf("invalid JSON string escape %q", s)
 				}
 				r, err := unquoteJSONHexEscape(s, i+1)
@@ -577,37 +571,60 @@ func json5LineContinuation(s string, i int) (int, bool) {
 	}
 }
 
-func validJSON5Number(s string) bool {
-	if s == "NaN" || s == "+NaN" || s == "-NaN" ||
-		s == "Infinity" || s == "+Infinity" || s == "-Infinity" {
+func validNumberWithOptions(s string, opts SyntaxOptions) bool {
+	if validNumber(s) {
 		return true
 	}
 
+	if strings.HasPrefix(s, "+") && !opts.LeadingPlusSigns {
+		return false
+	}
+
+	if opts.IEEE754Numbers && validIEEE754Number(s) {
+		return true
+	}
+
+	if opts.HexadecimalNumbers && hexNumberBody(s) != "" {
+		return true
+	}
+
+	if opts.LeadingPlusSigns && strings.HasPrefix(s, "+") && validNumber(strings.TrimPrefix(s, "+")) {
+		return true
+	}
+
+	if opts.LeadingOrTrailingDecimalPoints && validLeadingOrTrailingDecimalPointNumber(s) {
+		return true
+	}
+
+	return false
+}
+
+func validIEEE754Number(s string) bool {
+	return s == "NaN" || s == "+NaN" || s == "-NaN" ||
+		s == "Infinity" || s == "+Infinity" || s == "-Infinity"
+}
+
+func hexNumberBody(s string) string {
 	start := 0
 	if strings.HasPrefix(s, "+") || strings.HasPrefix(s, "-") {
 		start = 1
 		if start == len(s) {
-			return false
+			return ""
 		}
 	}
 	if len(s[start:]) > 2 && s[start] == '0' && (s[start+1] == 'x' || s[start+1] == 'X') {
-		if start+2 == len(s) {
-			return false
-		}
-		for _, r := range s[start+2:] {
+		body := s[start+2:]
+		for _, r := range body {
 			if !isHex(r) {
-				return false
+				return ""
 			}
 		}
-		return true
+		return body
 	}
-	if validNumber(strings.TrimPrefix(s, "+")) {
-		return true
-	}
-	return validJSON5Decimal(s)
+	return ""
 }
 
-func validJSON5Decimal(s string) bool {
+func validLeadingOrTrailingDecimalPointNumber(s string) bool {
 	i := 0
 	if i < len(s) && (s[i] == '+' || s[i] == '-') {
 		i++
@@ -625,6 +642,8 @@ func validJSON5Decimal(s string) bool {
 	hasDot := i < len(s) && s[i] == '.'
 	if hasDot {
 		i++
+	} else {
+		return false
 	}
 
 	digitsAfter := 0
@@ -634,6 +653,9 @@ func validJSON5Decimal(s string) bool {
 	}
 
 	if digitsBefore == 0 && digitsAfter == 0 {
+		return false
+	}
+	if digitsBefore != 0 && digitsAfter != 0 {
 		return false
 	}
 	if digitsBefore > 1 {
@@ -663,29 +685,56 @@ func validJSON5Decimal(s string) bool {
 }
 
 func parseIntLiteral(s string, bits int, opts decodeOptions) (int64, error) {
-	if opts.json5 {
-		return strconv.ParseInt(strings.TrimPrefix(s, "+"), 0, bits)
+	if strings.HasPrefix(s, "+") {
+		if !opts.syntax.LeadingPlusSigns {
+			return 0, strconv.ErrSyntax
+		}
+		s = strings.TrimPrefix(s, "+")
 	}
-	return strconv.ParseInt(s, 10, bits)
+	base := 10
+	if hexNumberBody(s) != "" {
+		if !opts.syntax.HexadecimalNumbers {
+			return 0, strconv.ErrSyntax
+		}
+		base = 0
+	}
+	return strconv.ParseInt(s, base, bits)
 }
 
 func parseUintLiteral(s string, bits int, opts decodeOptions) (uint64, error) {
-	if opts.json5 {
-		return strconv.ParseUint(strings.TrimPrefix(s, "+"), 0, bits)
+	if opts.syntax.LeadingPlusSigns {
+		s = strings.TrimPrefix(s, "+")
+	} else if strings.HasPrefix(s, "+") {
+		return 0, strconv.ErrSyntax
 	}
-	return strconv.ParseUint(s, 10, bits)
+	base := 10
+	if opts.syntax.HexadecimalNumbers && hexNumberBody(s) != "" {
+		base = 0
+	} else if hexNumberBody(s) != "" {
+		return 0, strconv.ErrSyntax
+	}
+	return strconv.ParseUint(s, base, bits)
 }
 
 func parseFloatLiteral(s string, bits int, opts decodeOptions) (float64, error) {
-	if !opts.json5 {
+	if opts.syntax.strictNumbers() {
 		return strconv.ParseFloat(s, bits)
 	}
 	switch s {
 	case "NaN", "+NaN", "-NaN":
+		if !opts.syntax.IEEE754Numbers || strings.HasPrefix(s, "+") && !opts.syntax.LeadingPlusSigns {
+			break
+		}
 		return math.NaN(), nil
 	case "Infinity", "+Infinity":
+		if !opts.syntax.IEEE754Numbers || strings.HasPrefix(s, "+") && !opts.syntax.LeadingPlusSigns {
+			break
+		}
 		return math.Inf(1), nil
 	case "-Infinity":
+		if !opts.syntax.IEEE754Numbers {
+			break
+		}
 		return math.Inf(-1), nil
 	}
 	start := 0
@@ -693,6 +742,9 @@ func parseFloatLiteral(s string, bits int, opts decodeOptions) (float64, error) 
 		start = 1
 	}
 	if len(s[start:]) > 2 && s[start] == '0' && (s[start+1] == 'x' || s[start+1] == 'X') {
+		if !opts.syntax.HexadecimalNumbers {
+			return 0, strconv.ErrSyntax
+		}
 		u, err := strconv.ParseUint(s[start+2:], 16, 64)
 		if err != nil {
 			return 0, err
@@ -702,6 +754,9 @@ func parseFloatLiteral(s string, bits int, opts decodeOptions) (float64, error) 
 			f = -f
 		}
 		return f, nil
+	}
+	if strings.HasPrefix(s, "+") && !opts.syntax.LeadingPlusSigns {
+		return 0, strconv.ErrSyntax
 	}
 	return strconv.ParseFloat(s, bits)
 }

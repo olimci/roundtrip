@@ -32,26 +32,20 @@ func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{w: w}
 }
 
-func NewJSONCEncoder(w io.Writer) *Encoder {
-	return NewEncoder(w)
-}
-
 func NewJSON5Encoder(w io.Writer) *Encoder {
 	e := NewEncoder(w)
-	e.SetAllowIdentifierKeys(true)
-	e.SetAllowJSON5Numbers(true)
+	e.SyntaxOptions = JSON5SyntaxOptions()
 	return e
 }
 
 type Encoder struct {
-	w                   io.Writer
-	Indent              string
-	Prefix              string
-	escapeHTMLDisabled  bool
-	AllowIdentifierKeys bool
-	AllowJSON5Numbers   bool
-	depth               int
-	tokens              *list.List[token]
+	w                  io.Writer
+	Indent             string
+	Prefix             string
+	escapeHTMLDisabled bool
+	SyntaxOptions
+	depth  int
+	tokens *list.List[token]
 }
 
 func (e *Encoder) EncodeMeta(m *Meta) error {
@@ -77,16 +71,8 @@ func (e *Encoder) SetEscapeHTML(on bool) {
 	e.escapeHTMLDisabled = !on
 }
 
-func (e *Encoder) SetAllowIdentifierKeys(on bool) {
-	e.AllowIdentifierKeys = on
-}
-
-func (e *Encoder) SetAllowJSON5Numbers(on bool) {
-	e.AllowJSON5Numbers = on
-}
-
 func (e *Encoder) encode(v any) (*node, error) {
-	e.tokens = list.New[token]()
+	e.tokens = new(list.List[token])
 	return e.value(reflect.ValueOf(v), 0)
 }
 
@@ -99,13 +85,13 @@ func (e *Encoder) value(v reflect.Value, depth int) (*node, error) {
 		return e.scalar(NodeTypeNull, TokenIdentifier, "null"), nil
 	}
 
-	if v.Kind() == reflect.Pointer && v.Type().Elem() == numberType && e.AllowJSON5Numbers {
+	if v.Kind() == reflect.Pointer && v.Type().Elem() == numberType && !e.SyntaxOptions.strictNumbers() {
 		return e.value(v.Elem(), depth)
 	}
 
-	if v.Type() == numberType && e.AllowJSON5Numbers {
+	if v.Type() == numberType && !e.SyntaxOptions.strictNumbers() {
 		n := v.Interface().(Number)
-		if !validJSON5Number(string(n)) {
+		if !validNumberWithOptions(string(n), e.SyntaxOptions) {
 			return nil, fmt.Errorf("json: invalid number literal %q", n)
 		}
 		return e.scalar(NodeTypeNumber, TokenNumber, string(n)), nil
@@ -122,9 +108,7 @@ func (e *Encoder) value(v reflect.Value, depth int) (*node, error) {
 			b = escaped.Bytes()
 		}
 		d := NewDecoder(bytes.NewReader(b))
-		if e.AllowJSON5Numbers || e.AllowIdentifierKeys {
-			d = NewJSON5Decoder(bytes.NewReader(b))
-		}
+		d.SyntaxOptions = e.SyntaxOptions
 		meta, err := d.DecodeMeta()
 		if err != nil {
 			return nil, err
@@ -157,6 +141,9 @@ func (e *Encoder) value(v reflect.Value, depth int) (*node, error) {
 	case reflect.Float32, reflect.Float64:
 		f := v.Float()
 		if math.IsInf(f, 0) || math.IsNaN(f) {
+			if e.IEEE754Numbers {
+				return e.scalar(NodeTypeNumber, TokenIdentifier, formatIEEE754(f)), nil
+			}
 			return nil, fmt.Errorf("cannot encode %v", f)
 		}
 		return e.scalar(NodeTypeNumber, TokenNumber, formatFloat(f, int(v.Type().Bits()))), nil
@@ -189,13 +176,18 @@ func (e *Encoder) array(v reflect.Value, depth int) (*node, error) {
 			e.token(TokenComma, ",")
 		}
 		e.newline(depth + 1)
+		start := e.token(TokenAnchor, "")
 		child, err := e.value(v.Index(i), depth+1)
 		if err != nil {
 			return nil, err
 		}
-		n.Children = append(n.Children, child)
+		end := e.token(TokenAnchor, "")
+		n.Children = append(n.Children, arrayElementNode(child, start, end))
 	}
 	if v.Len() > 0 {
+		if e.TrailingCommas {
+			e.token(TokenComma, ",")
+		}
 		e.newline(depth)
 	}
 	n.End = e.token(TokenRightBracket, "]")
@@ -226,6 +218,7 @@ func (e *Encoder) mapValue(v reflect.Value, depth int) (*node, error) {
 			e.token(TokenComma, ",")
 		}
 		e.newline(depth + 1)
+		start := e.token(TokenAnchor, "")
 		keyNode := e.objectKey(key)
 		e.token(TokenColon, ":")
 		e.fieldSpace()
@@ -233,9 +226,13 @@ func (e *Encoder) mapValue(v reflect.Value, depth int) (*node, error) {
 		if err != nil {
 			return nil, err
 		}
-		appendObjectField(n, keyNode, valueNode)
+		end := e.token(TokenAnchor, "")
+		n.Children = append(n.Children, objectFieldNode(keyNode, valueNode, start, end))
 	}
 	if v.Len() > 0 {
+		if e.TrailingCommas {
+			e.token(TokenComma, ",")
+		}
 		e.newline(depth)
 	}
 	n.End = e.token(TokenRightBrace, "}")
@@ -251,11 +248,12 @@ func (e *Encoder) structValue(v reflect.Value, depth int) (*node, error) {
 			e.token(TokenComma, ",")
 		}
 		e.newline(depth + 1)
+		start := e.token(TokenAnchor, "")
 		keyNode := e.objectKey(field.Name)
 		e.token(TokenColon, ":")
 		e.fieldSpace()
 		fieldValue := field.Value
-		if field.Quoted && quoteValue(fieldValue) {
+		if field.Quoted && quoteType(fieldValue.Type()) {
 			encoded, err := encodedValueString(fieldValue)
 			if err != nil {
 				return nil, err
@@ -266,9 +264,13 @@ func (e *Encoder) structValue(v reflect.Value, depth int) (*node, error) {
 		if err != nil {
 			return nil, err
 		}
-		appendObjectField(n, keyNode, valueNode)
+		end := e.token(TokenAnchor, "")
+		n.Children = append(n.Children, objectFieldNode(keyNode, valueNode, start, end))
 	}
 	if len(fields) > 0 {
+		if e.TrailingCommas {
+			e.token(TokenComma, ",")
+		}
 		e.newline(depth)
 	}
 	n.End = e.token(TokenRightBrace, "}")
@@ -276,7 +278,7 @@ func (e *Encoder) structValue(v reflect.Value, depth int) (*node, error) {
 }
 
 func (e *Encoder) objectKey(s string) *node {
-	if e.AllowIdentifierKeys && isJSON5Identifier(s) {
+	if e.ECMAScriptIdentifiers && isJSON5Identifier(s) {
 		return e.scalar(NodeTypeString, TokenIdentifier, s)
 	}
 	return e.scalar(NodeTypeString, TokenString, e.quoteString(s))
@@ -381,6 +383,19 @@ func formatFloat(f float64, bits int) string {
 		}
 	}
 	return string(b)
+}
+
+func formatIEEE754(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	default:
+		panic("formatIEEE754 called with finite float")
+	}
 }
 
 func (e *Encoder) newline(depth int) {

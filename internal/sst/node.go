@@ -42,16 +42,29 @@ func (n *Node[TT, NT]) Bytes() []byte {
 	return []byte(sb.String())
 }
 
-func (n *Node[TT, NT]) Walk() iter.Seq[*Node[TT, NT]] {
-	return func(yield func(*Node[TT, NT]) bool) {
-		WalkNodes(n, yield)
+func (n *Node[TT, NT]) Clone() (*Node[TT, NT], *list.List[Token[TT]]) {
+	tokens := new(list.List[Token[TT]])
+	elems := map[*list.Elem[Token[TT]]]*list.Elem[Token[TT]]{}
+	for e := n.Start; e != nil; e = e.Next {
+		elems[e] = tokens.PushBack(e.Value)
+		if e == n.End {
+			break
+		}
 	}
+	return cloneNode(n, elems), tokens
 }
 
-func (n *Node[TT, NT]) WalkLeaves() iter.Seq[*Node[TT, NT]] {
-	return func(yield func(*Node[TT, NT]) bool) {
-		WalkLeaves(n, yield)
+func cloneNode[TT, NT Enum](n *Node[TT, NT], elems map[*list.Elem[Token[TT]]]*list.Elem[Token[TT]]) *Node[TT, NT] {
+	clone := &Node[TT, NT]{
+		Type:     n.Type,
+		Start:    elems[n.Start],
+		End:      elems[n.End],
+		Children: make([]*Node[TT, NT], len(n.Children)),
 	}
+	for i, child := range n.Children {
+		clone.Children[i] = cloneNode(child, elems)
+	}
+	return clone
 }
 
 func WalkNodes[TT, NT Enum](n *Node[TT, NT], yield func(*Node[TT, NT]) bool) bool {

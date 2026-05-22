@@ -148,9 +148,9 @@ func TestReplaceWithEmptyListRemovesRange(t *testing.T) {
 
 func TestSliceHelpers(t *testing.T) {
 	l := FromSlice([]string{"b"})
-	l.PushFrontSlice([]string{"a"})
-	l.PushBackSlice([]string{"d"})
-	l.InsertSliceAfter(l.Head.Next, []string{"c"})
+	l.PushFrontList(FromSlice([]string{"a"}))
+	l.PushBackList(FromSlice([]string{"d"}))
+	l.InsertListAfter(l.Head.Next, FromSlice([]string{"c"}))
 
 	got := slices.Collect(l.Values())
 	want := []string{"a", "b", "c", "d"}

@@ -58,7 +58,11 @@ func nodeDepth(root, target *node, depth int) int {
 		return depth
 	}
 	for _, child := range root.Children {
-		if d := nodeDepth(child, target, depth+1); d >= 0 {
+		childDepth := depth + 1
+		if transparentNodeDepth(root) {
+			childDepth = depth
+		}
+		if d := nodeDepth(child, target, childDepth); d >= 0 {
 			return d
 		}
 	}
@@ -70,9 +74,17 @@ func walkIndent(n *node, depth int, yield func(*node, int) bool) bool {
 		return false
 	}
 	for _, child := range n.Children {
-		if !walkIndent(child, depth+1, yield) {
+		childDepth := depth + 1
+		if transparentNodeDepth(n) {
+			childDepth = depth
+		}
+		if !walkIndent(child, childDepth, yield) {
 			return false
 		}
 	}
 	return true
+}
+
+func transparentNodeDepth(n *node) bool {
+	return n.Type == NodeTypeObjectField || n.Type == NodeTypeArrayElement
 }

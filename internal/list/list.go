@@ -2,10 +2,6 @@ package list
 
 import "iter"
 
-func New[T any]() *List[T] {
-	return &List[T]{}
-}
-
 type List[T any] struct {
 	Head *Elem[T]
 	Tail *Elem[T]
@@ -68,22 +64,6 @@ func (l *List[T]) InsertListAfter(mark *Elem[T], src *List[T]) {
 	l.splice(mark, mark.Next, src)
 }
 
-func (l *List[T]) PushFrontSlice(values []T) {
-	l.PushFrontList(FromSlice(values))
-}
-
-func (l *List[T]) PushBackSlice(values []T) {
-	l.PushBackList(FromSlice(values))
-}
-
-func (l *List[T]) InsertSliceBefore(mark *Elem[T], values []T) {
-	l.InsertListBefore(mark, FromSlice(values))
-}
-
-func (l *List[T]) InsertSliceAfter(mark *Elem[T], values []T) {
-	l.InsertListAfter(mark, FromSlice(values))
-}
-
 func (l *List[T]) Remove(e *Elem[T]) T {
 	l.check(e)
 	if e.Prev != nil {
@@ -135,20 +115,12 @@ func (l *List[T]) Replace(e *Elem[T], src *List[T]) T {
 	return value
 }
 
-func (l *List[T]) ReplaceSlice(e *Elem[T], values []T) T {
-	return l.Replace(e, FromSlice(values))
-}
-
 func (l *List[T]) ReplaceRange(first, last *Elem[T], src *List[T]) {
 	l.checkRange(first, last)
 	prev, next := first.Prev, last.Next
 	removed := l.detachRange(first, next)
 	l.len -= removed
 	l.splice(prev, next, src)
-}
-
-func (l *List[T]) ReplaceRangeSlice(first, last *Elem[T], values []T) {
-	l.ReplaceRange(first, last, FromSlice(values))
 }
 
 func (l *List[T]) Elems() iter.Seq[*Elem[T]] {

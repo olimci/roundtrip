@@ -1,31 +1,33 @@
 # TODO: JSON
 
+## Now
+
+Nothing active.
+
+## Definite
+
+- [ ] cooler struct tags (can we do hex numbers/indent etc?)
+- [ ] Array/Object re-ordering. Likely best options are a Swap, and a sortfunc. try to mirror slices package. (Will be pretty slow regardless but eh)
+- [ ] Let Valid/Comact etc define syntax rules.
+- [ ] Add Lexer tests.
+
 ## Parity
 
-- [x] Better JSON parity: 
-  - [x] Util funcs like Valid, Compact, Indent, HTMLEscape. Compact/Indent preseerving comments is an obvious use case.
-  - [x] Better encoding/decoding option ergonomics
-  - [x] Repeated encodes/decodes on one encoder/decoder. Perhaps we can detatch the linked list collector from the lexer, since that is likely the main issue. (actually that feels like a better seperation anyway)
-  - [x] Improve struct field resolution, to parity with the standard library (+Anonymous struct field resolution)
-  - [x] Check if omitempty/omitzero are good as is. (might be fine)
-  - [x] Disallow unknown fields option.
+- [ ] Check streaming decoder behaviour matches json.
 
-## Features
+## Potential
 
-- [ ] Node accessors
-  - [ ] Some sort of simple path accessor
-  - [ ] JSON pointer accessor
-- [ ] Better Comment APIs
-- [ ] Object/array field tools
-  - [ ] Moving/positioning things.
-- [x] JSON5 support
+- [ ] Is structural diffing something useful for this to offer? Is there an ergonmic way to do it.
+  - Equally, is this something that would want to integrate with patch/merge patch.
+- [ ] is it worth adding a cmd/? could hold structual diffs, some jq-like tool etc.
+- [ ] standard comment tag format.
+- [ ] merge left/right brace/bracket into one delim token
+- [ ] Better fuzzing coverage.
 
-## Potential Issues
+## Writing
 
-- [ ] Marshal cycle detection
-
-## Longterm
-
-- Is structural diffing something useful for this to offer? Is there an ergonmic way to do it.
-- Documentation/Examples
-- Blogpost on the project
+- [ ] Documentation
+  - [x] README.md
+  - [ ] Comments
+- [ ] Examples
+- [ ] Blogpost on the project
