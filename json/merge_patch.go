@@ -1,5 +1,9 @@
 package json
 
+// Merge applies an RFC 7396 JSON Merge Patch to target.
+//
+// target and patch must be valid Nodes. The patch value is read from its owning
+// Meta and cloned into target's owning Meta as needed.
 func (target Node) Merge(patch Node) error {
 	working := cloneMetaFromNode(target)
 	root := working.Root()
@@ -9,6 +13,9 @@ func (target Node) Merge(patch Node) error {
 	return target.replaceWithNode(root)
 }
 
+// Merge applies an RFC 7396 JSON Merge Patch to m.
+//
+// m and patch must be non-nil. The patch document is read but not mutated.
 func (m *Meta) Merge(patch *Meta) error {
 	working := cloneMetaFromNode(m.Root())
 	root := working.Root()

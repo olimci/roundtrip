@@ -16,28 +16,42 @@ import (
 	"github.com/olimci/roundtrip/internal/util/reflectutil"
 )
 
+// Marshal encodes v as JSON.
 func Marshal(v any) ([]byte, error) {
 	var b bytes.Buffer
 	err := NewEncoder(&b).Encode(v)
 	return b.Bytes(), err
 }
 
+// MarshalMeta returns the current bytes represented by m.
+//
+// m must be non-nil.
 func MarshalMeta(m *Meta) ([]byte, error) {
 	var b bytes.Buffer
 	err := NewEncoder(&b).EncodeMeta(m)
 	return b.Bytes(), err
 }
 
+// NewEncoder returns an encoder that writes strict JSON to w.
+//
+// w must be non-nil and must remain usable for the lifetime of the Encoder.
 func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{w: w}
 }
 
+// NewJSON5Encoder returns an encoder that writes JSON5-compatible output to w.
+//
+// w must be non-nil and must remain usable for the lifetime of the Encoder.
 func NewJSON5Encoder(w io.Writer) *Encoder {
 	e := NewEncoder(w)
 	e.SyntaxOptions = JSON5SyntaxOptions()
 	return e
 }
 
+// Encoder writes JSON values to an output stream.
+//
+// An Encoder is stateful and not safe for concurrent use. Its methods require a
+// non-nil *Encoder returned by NewEncoder or NewJSON5Encoder.
 type Encoder struct {
 	w                  io.Writer
 	Indent             string
@@ -48,11 +62,15 @@ type Encoder struct {
 	tokens *list.List[token]
 }
 
+// EncodeMeta writes the current bytes represented by m.
+//
+// m must be non-nil.
 func (e *Encoder) EncodeMeta(m *Meta) error {
 	_, err := e.w.Write(m.SST.Root.Bytes())
 	return err
 }
 
+// Encode writes v as one JSON value.
 func (e *Encoder) Encode(v any) error {
 	n, err := e.encode(v)
 	if err != nil {
@@ -62,11 +80,15 @@ func (e *Encoder) Encode(v any) error {
 	return err
 }
 
+// SetIndent configures the prefix and indentation used for subsequent Encode
+// calls.
 func (e *Encoder) SetIndent(prefix, indent string) {
 	e.Prefix = prefix
 	e.Indent = indent
 }
 
+// SetEscapeHTML controls whether string values escape HTML-significant
+// characters.
 func (e *Encoder) SetEscapeHTML(on bool) {
 	e.escapeHTMLDisabled = !on
 }

@@ -9,6 +9,11 @@ import (
 	"github.com/olimci/roundtrip/internal/sst"
 )
 
+// Unmarshal parses one JSON value from data, stores it in v, and returns the
+// parsed metadata tree.
+//
+// v must be a non-nil pointer. The returned *Meta owns the parsed document;
+// Nodes obtained from it remain live handles into that Meta.
 func Unmarshal(data []byte, v any) (*Meta, error) {
 	d := NewDecoder(bytes.NewReader(data))
 	m, err := d.DecodeMeta()
@@ -22,24 +27,37 @@ func Unmarshal(data []byte, v any) (*Meta, error) {
 	})
 }
 
+// NewDecoder returns a decoder that reads strict JSON from r.
+//
+// r must be non-nil and must remain usable for the lifetime of the Decoder.
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{
 		l: newLexer(r),
 	}
 }
 
+// NewJSONCDecoder returns a decoder that reads JSONC from r.
+//
+// r must be non-nil and must remain usable for the lifetime of the Decoder.
 func NewJSONCDecoder(r io.Reader) *Decoder {
 	d := NewDecoder(r)
 	d.SyntaxOptions = JSONCSyntaxOptions()
 	return d
 }
 
+// NewJSON5Decoder returns a decoder that reads JSON5 from r.
+//
+// r must be non-nil and must remain usable for the lifetime of the Decoder.
 func NewJSON5Decoder(r io.Reader) *Decoder {
 	d := NewDecoder(r)
 	d.SyntaxOptions = JSON5SyntaxOptions()
 	return d
 }
 
+// Decoder reads JSON values from an input stream.
+//
+// A Decoder is stateful and not safe for concurrent use. Its methods require a
+// non-nil *Decoder returned by NewDecoder, NewJSONCDecoder, or NewJSON5Decoder.
 type Decoder struct {
 	l           *lexer
 	tokens      *list.List[token]
@@ -49,6 +67,7 @@ type Decoder struct {
 	disallowUnknown bool
 }
 
+// DecodeMeta reads one complete JSON value and returns its metadata tree.
 func (d *Decoder) DecodeMeta() (*Meta, error) {
 	return d.decodeMeta(true)
 }
@@ -82,6 +101,10 @@ func (d *Decoder) decodeMeta(requireEOF bool) (*Meta, error) {
 	}, nil
 }
 
+// Decode reads the next JSON value, stores it in v, and returns its metadata
+// tree.
+//
+// v must be a non-nil pointer. At the end of a stream, Decode returns io.EOF.
 func (d *Decoder) Decode(v any) (*Meta, error) {
 	m, err := d.decodeMeta(false)
 	if err != nil {
@@ -97,14 +120,20 @@ func (d *Decoder) Decode(v any) (*Meta, error) {
 	})
 }
 
+// UseNumber causes Decode and Unmarshal to store numbers in interface values as
+// Number instead of float64.
 func (d *Decoder) UseNumber() {
 	d.useNumber = true
 }
 
+// DisallowUnknownFields causes Decode to reject object keys that do not match a
+// destination struct field.
 func (d *Decoder) DisallowUnknownFields() {
 	d.disallowUnknown = true
 }
 
+// More reports whether another element is available in the current array or
+// object being decoded.
 func (d *Decoder) More() bool {
 	for {
 		t := d.l.peekToken()
@@ -116,6 +145,8 @@ func (d *Decoder) More() bool {
 	}
 }
 
+// Buffered returns a reader for bytes already read from the underlying reader
+// but not consumed by the decoder.
 func (d *Decoder) Buffered() io.Reader {
 	var b bytes.Buffer
 	if d.l.peek != nil {
@@ -128,6 +159,7 @@ func (d *Decoder) Buffered() io.Reader {
 	return bytes.NewReader(b.Bytes())
 }
 
+// InputOffset returns the byte offset of the decoder's current input position.
 func (d *Decoder) InputOffset() int64 {
 	return int64(d.l.cursor.Offset)
 }

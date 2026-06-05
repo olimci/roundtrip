@@ -8,16 +8,23 @@ import (
 )
 
 var (
-	ErrEmptyPath          = errors.New("empty path")
+	// ErrEmptyPath reports a mutation operation that requires at least one path segment.
+	ErrEmptyPath = errors.New("empty path")
+	// ErrInvalidPathSegment reports a path segment with an unsupported type or value.
 	ErrInvalidPathSegment = errors.New("invalid path segment")
+	// ErrInvalidJSONPointer reports a malformed RFC 6901 JSON Pointer.
 	ErrInvalidJSONPointer = errors.New("invalid JSON pointer")
-	ErrInvalidAppend      = errors.New("invalid append segment")
+	// ErrInvalidAppend reports use of the append marker outside array insertion.
+	ErrInvalidAppend = errors.New("invalid append segment")
 )
 
+// AppendSegment marks an array append operation in InsertAt paths.
 type AppendSegment struct{}
 
+// Append appends to an array when used as the final segment of InsertAt.
 var Append AppendSegment
 
+// PathError describes an error while applying a path or JSON Pointer operation.
 type PathError struct {
 	Op      string
 	Index   int
@@ -25,6 +32,7 @@ type PathError struct {
 	Err     error
 }
 
+// Error returns the formatted path error.
 func (e *PathError) Error() string {
 	if e.Index < 0 {
 		return fmt.Sprintf("json: %s path: %v", e.Op, e.Err)
@@ -32,10 +40,16 @@ func (e *PathError) Error() string {
 	return fmt.Sprintf("json: %s path segment %d (%v): %v", e.Op, e.Index, e.Segment, e.Err)
 }
 
+// Unwrap returns the underlying path error.
 func (e *PathError) Unwrap() error {
 	return e.Err
 }
 
+// At follows path from this node and returns the addressed node.
+//
+// String segments select object fields, int segments select array indexes, and
+// Append is invalid for access. The returned Node is a live handle into the same
+// Meta.
 func (n Node) At(path ...any) (Node, error) {
 	current := n
 	for i, segment := range path {
@@ -67,6 +81,10 @@ func (n Node) At(path ...any) (Node, error) {
 	return current, nil
 }
 
+// ReplaceAt replaces the node addressed by path.
+//
+// An empty path replaces the receiver. If value is a Node or *Meta, its current
+// JSON value is cloned into this node's owning Meta.
 func (n Node) ReplaceAt(value any, path ...any) error {
 	if len(path) == 0 {
 		return n.Replace(value)
@@ -94,6 +112,10 @@ func (n Node) ReplaceAt(value any, path ...any) error {
 	return nil
 }
 
+// InsertAt inserts value at path.
+//
+// The final path segment may be Append to append to an array. If value is a Node
+// or *Meta, its current JSON value is cloned into this node's owning Meta.
 func (n Node) InsertAt(value any, path ...any) error {
 	if len(path) == 0 {
 		return &PathError{Op: "insert", Index: -1, Err: ErrEmptyPath}
@@ -129,6 +151,7 @@ func (n Node) InsertAt(value any, path ...any) error {
 	return nil
 }
 
+// RemoveAt removes the node addressed by path.
 func (n Node) RemoveAt(path ...any) error {
 	if len(path) == 0 {
 		return &PathError{Op: "remove", Index: -1, Err: ErrEmptyPath}
@@ -156,6 +179,9 @@ func (n Node) RemoveAt(path ...any) error {
 	return nil
 }
 
+// JSONPointer follows an RFC 6901 JSON Pointer from this node.
+//
+// The returned Node is a live handle into the same Meta.
 func (n Node) JSONPointer(pointer string) (Node, error) {
 	tokens, err := parseJSONPointer(pointer)
 	if err != nil {
@@ -172,6 +198,10 @@ func (n Node) JSONPointer(pointer string) (Node, error) {
 	return current, nil
 }
 
+// ReplaceJSONPointer replaces the node addressed by an RFC 6901 JSON Pointer.
+//
+// An empty pointer replaces the receiver. If value is a Node or *Meta, its
+// current JSON value is cloned into this node's owning Meta.
 func (n Node) ReplaceJSONPointer(pointer string, value any) error {
 	tokens, err := parseJSONPointer(pointer)
 	if err != nil {
@@ -205,6 +235,10 @@ func (n Node) ReplaceJSONPointer(pointer string, value any) error {
 	return nil
 }
 
+// InsertJSONPointer inserts value at an RFC 6901 JSON Pointer.
+//
+// A final "-" token appends to an array. If value is a Node or *Meta, its
+// current JSON value is cloned into this node's owning Meta.
 func (n Node) InsertJSONPointer(pointer string, value any) error {
 	tokens, err := parseJSONPointer(pointer)
 	if err != nil {
@@ -247,6 +281,7 @@ func (n Node) InsertJSONPointer(pointer string, value any) error {
 	return nil
 }
 
+// RemoveJSONPointer removes the node addressed by an RFC 6901 JSON Pointer.
 func (n Node) RemoveJSONPointer(pointer string) error {
 	tokens, err := parseJSONPointer(pointer)
 	if err != nil {

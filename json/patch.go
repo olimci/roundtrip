@@ -11,11 +11,19 @@ import (
 )
 
 var (
-	ErrInvalidPatch          = errors.New("invalid JSON patch")
+	// ErrInvalidPatch reports a patch document that is not a valid patch array.
+	ErrInvalidPatch = errors.New("invalid JSON patch")
+	// ErrInvalidPatchOperation reports an invalid operation inside a patch document.
 	ErrInvalidPatchOperation = errors.New("invalid JSON patch operation")
-	ErrPatchTestFailed       = errors.New("JSON patch test failed")
+	// ErrPatchTestFailed reports a failed JSON Patch test operation.
+	ErrPatchTestFailed = errors.New("JSON patch test failed")
 )
 
+// Patch is one RFC 6902 JSON Patch operation.
+//
+// Value may be a plain Go value, Node, or *Meta. When Value is a Node or *Meta,
+// the operation clones its current JSON value before inserting it into the
+// target.
 type Patch struct {
 	Op    string
 	Path  string
@@ -23,6 +31,10 @@ type Patch struct {
 	Value any
 }
 
+// DecodePatch reads RFC 6902 JSON Patch operations from r.
+//
+// r must be non-nil. Patch values decoded from the "value" field are live Nodes
+// owned by the temporary Meta built while decoding.
 func DecodePatch(r io.Reader) ([]Patch, error) {
 	d := NewJSON5Decoder(r)
 	m, err := d.DecodeMeta()
@@ -53,6 +65,9 @@ func decodePatch(m *Meta) ([]Patch, error) {
 	return patches, nil
 }
 
+// Patch applies RFC 6902 JSON Patch operations to target atomically.
+//
+// If an operation fails, target is unchanged.
 func (target Node) Patch(patches ...Patch) error {
 	working := cloneMetaFromNode(target)
 	root := working.Root()
@@ -62,6 +77,9 @@ func (target Node) Patch(patches ...Patch) error {
 	return target.replaceWithNode(root)
 }
 
+// Patch applies RFC 6902 JSON Patch operations to m atomically.
+//
+// m must be non-nil. If an operation fails, m is unchanged.
 func (m *Meta) Patch(patches ...Patch) error {
 	working := cloneMetaFromNode(m.Root())
 	root := working.Root()

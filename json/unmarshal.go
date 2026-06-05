@@ -14,6 +14,11 @@ import (
 	"github.com/olimci/roundtrip/internal/util/reflectutil"
 )
 
+// Unmarshaler is implemented by values that decode their own JSON
+// representation.
+//
+// UnmarshalJSON receives the exact bytes for the value being decoded. Pointer
+// receiver implementations are called only when the target value is addressable.
 type Unmarshaler interface {
 	UnmarshalJSON([]byte) error
 }

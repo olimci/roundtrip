@@ -6,11 +6,15 @@ import (
 	"unicode/utf8"
 )
 
+// Valid reports whether data is a complete strict JSON value.
 func Valid(data []byte) bool {
 	_, err := NewDecoder(bytes.NewReader(data)).DecodeMeta()
 	return err == nil
 }
 
+// Compact appends src to dst with insignificant whitespace removed.
+//
+// dst must be non-nil. Compact accepts JSON5 syntax and preserves comments.
 func Compact(dst *bytes.Buffer, src []byte) error {
 	m, err := NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
 	if err != nil {
@@ -32,6 +36,9 @@ func Compact(dst *bytes.Buffer, src []byte) error {
 	return nil
 }
 
+// Indent appends an indented form of src to dst.
+//
+// dst must be non-nil. Indent accepts JSON5 syntax and preserves comments.
 func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 	m, err := NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
 	if err != nil {
@@ -75,6 +82,10 @@ func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 	return nil
 }
 
+// HTMLEscape appends src to dst with HTML-significant characters escaped inside
+// JSON strings.
+//
+// dst must be non-nil.
 func HTMLEscape(dst *bytes.Buffer, src []byte) {
 	inString := false
 	start := 0

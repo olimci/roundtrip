@@ -11,6 +11,10 @@ import (
 	"unicode"
 )
 
+// Marshaler is implemented by values that encode their own JSON representation.
+//
+// MarshalJSON must return one complete JSON value. Pointer receiver
+// implementations are called only when the source value is addressable.
 type Marshaler interface {
 	MarshalJSON() ([]byte, error)
 }
