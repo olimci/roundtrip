@@ -4,4 +4,4 @@ This repository contains a collection of roundtrippable parsers. Currently, it o
 
 ## method
 
-![diagram](_assets_/principle.png)
+![diagram](.assets/principle.png)

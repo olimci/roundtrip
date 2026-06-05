@@ -141,7 +141,7 @@ func (d *Decoder) More() bool {
 			_ = d.l.next()
 			continue
 		}
-		return t.Type != TokenEOF && t.Type != TokenRightBrace && t.Type != TokenRightBracket
+		return t.Type != TokenEOF && !isCloseDelim(t)
 	}
 }
 
@@ -175,16 +175,20 @@ func (d *Decoder) parse() (*node, error) {
 	}
 
 	switch t.Type {
-	case TokenLeftBrace:
-		return d.parseObject()
-	case TokenLeftBracket:
-		return d.parseArray()
 	case TokenString:
 		return d.parseScalar(NodeTypeString)
 	case TokenNumber:
 		return d.parseScalar(NodeTypeNumber)
 	case TokenIdentifier:
 		return d.parseIdentifier()
+	case TokenDelim:
+		switch t.Literal {
+		case "{":
+			return d.parseObject()
+		case "[":
+			return d.parseArray()
+		}
+		return nil, ParseError{ErrUnexpectedToken, t}
 	default:
 		return nil, ParseError{ErrUnexpectedToken, t}
 	}
@@ -200,12 +204,13 @@ func (d *Decoder) parseObject() (*node, error) {
 	}
 
 	t := d.l.peekToken()
-	if t.Type == TokenRightBrace {
+	if isRightBrace(t) {
 		_ = d.next()
 		n.End = d.currentElem
 		return n, nil
 	}
 
+	names := map[string]struct{}{}
 	for {
 		if t.Type == TokenEOF {
 			return nil, ParseError{ErrUnexpectedEOF, t}
@@ -218,6 +223,14 @@ func (d *Decoder) parseObject() (*node, error) {
 		if err != nil {
 			return nil, err
 		}
+		name, err := d.objectKeyName(key)
+		if err != nil {
+			return nil, ParseError{ErrInvalidString, key.Start.Value}
+		}
+		if _, exists := names[name]; exists {
+			return nil, ParseError{ErrDuplicateObjectKey, key.Start.Value}
+		}
+		names[name] = struct{}{}
 
 		if err := d.consume(); err != nil {
 			return nil, err
@@ -253,7 +266,7 @@ func (d *Decoder) parseObject() (*node, error) {
 				return nil, err
 			}
 			t = d.l.peekToken()
-			if t.Type == TokenRightBrace {
+			if isRightBrace(t) {
 				if !d.TrailingCommas {
 					return nil, ParseError{ErrUnexpectedToken, t}
 				}
@@ -261,7 +274,10 @@ func (d *Decoder) parseObject() (*node, error) {
 				n.End = d.currentElem
 				return n, nil
 			}
-		case TokenRightBrace:
+		case TokenDelim:
+			if !isRightBrace(t) {
+				return nil, ParseError{ErrUnexpectedToken, t}
+			}
 			_ = d.next()
 			n.End = d.currentElem
 			return n, nil
@@ -281,7 +297,7 @@ func (d *Decoder) parseArray() (*node, error) {
 	}
 
 	t := d.l.peekToken()
-	if t.Type == TokenRightBracket {
+	if isRightBracket(t) {
 		_ = d.next()
 		n.End = d.currentElem
 		return n, nil
@@ -314,7 +330,7 @@ func (d *Decoder) parseArray() (*node, error) {
 				return nil, err
 			}
 			t = d.l.peekToken()
-			if t.Type == TokenRightBracket {
+			if isRightBracket(t) {
 				if !d.TrailingCommas {
 					return nil, ParseError{ErrUnexpectedToken, t}
 				}
@@ -322,7 +338,10 @@ func (d *Decoder) parseArray() (*node, error) {
 				n.End = d.currentElem
 				return n, nil
 			}
-		case TokenRightBracket:
+		case TokenDelim:
+			if !isRightBracket(t) {
+				return nil, ParseError{ErrUnexpectedToken, t}
+			}
 			_ = d.next()
 			n.End = d.currentElem
 			return n, nil
@@ -360,6 +379,13 @@ func (d *Decoder) parseObjectKey() (*node, error) {
 		return &node{Type: NodeTypeString, Start: i, End: i}, nil
 	}
 	return d.parseScalar(NodeTypeString)
+}
+
+func (d *Decoder) objectKeyName(key *node) (string, error) {
+	if key.Start.Value.Type == TokenIdentifier {
+		return key.Start.Value.Literal, nil
+	}
+	return unquoteString(key.Start.Value.Literal, d.SyntaxOptions)
 }
 
 func (d *Decoder) parseIdentifier() (*node, error) {

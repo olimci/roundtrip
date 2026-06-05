@@ -10,7 +10,7 @@ import (
 func TestLexerTokens(t *testing.T) {
 	input := "{\n\t// c\n\t'a': +.5,\n\tb: /* block */ [true, null]\n}"
 	want := []token{
-		{Type: TokenLeftBrace, Literal: "{", Position: cursor.Position{Line: 1, Column: 1, Offset: 0}},
+		{Type: TokenDelim, Literal: "{", Position: cursor.Position{Line: 1, Column: 1, Offset: 0}},
 		{Type: TokenNewline, Literal: "\n", Position: cursor.Position{Line: 1, Column: 2, Offset: 1}},
 		{Type: TokenWhitespace, Literal: "\t", Position: cursor.Position{Line: 2, Column: 1, Offset: 2}},
 		{Type: TokenComment, Literal: "// c", Position: cursor.Position{Line: 2, Column: 2, Offset: 3}},
@@ -28,14 +28,14 @@ func TestLexerTokens(t *testing.T) {
 		{Type: TokenWhitespace, Literal: " ", Position: cursor.Position{Line: 4, Column: 4, Offset: 22}},
 		{Type: TokenComment, Literal: "/* block */", Position: cursor.Position{Line: 4, Column: 5, Offset: 23}},
 		{Type: TokenWhitespace, Literal: " ", Position: cursor.Position{Line: 4, Column: 16, Offset: 34}},
-		{Type: TokenLeftBracket, Literal: "[", Position: cursor.Position{Line: 4, Column: 17, Offset: 35}},
+		{Type: TokenDelim, Literal: "[", Position: cursor.Position{Line: 4, Column: 17, Offset: 35}},
 		{Type: TokenIdentifier, Literal: "true", Position: cursor.Position{Line: 4, Column: 18, Offset: 36}},
 		{Type: TokenComma, Literal: ",", Position: cursor.Position{Line: 4, Column: 22, Offset: 40}},
 		{Type: TokenWhitespace, Literal: " ", Position: cursor.Position{Line: 4, Column: 23, Offset: 41}},
 		{Type: TokenIdentifier, Literal: "null", Position: cursor.Position{Line: 4, Column: 24, Offset: 42}},
-		{Type: TokenRightBracket, Literal: "]", Position: cursor.Position{Line: 4, Column: 28, Offset: 46}},
+		{Type: TokenDelim, Literal: "]", Position: cursor.Position{Line: 4, Column: 28, Offset: 46}},
 		{Type: TokenNewline, Literal: "\n", Position: cursor.Position{Line: 4, Column: 29, Offset: 47}},
-		{Type: TokenRightBrace, Literal: "}", Position: cursor.Position{Line: 5, Column: 1, Offset: 48}},
+		{Type: TokenDelim, Literal: "}", Position: cursor.Position{Line: 5, Column: 1, Offset: 48}},
 	}
 
 	var got []token
@@ -102,7 +102,7 @@ func TestLexerPeekTokenDoesNotConsume(t *testing.T) {
 	if next != peeked {
 		t.Fatalf("next() after peek = %#v, want %#v", next, peeked)
 	}
-	if next.Type != TokenLeftBrace {
-		t.Fatalf("first token type = %v, want LEFT_BRACE", next.Type)
+	if next.Type != TokenDelim || next.Literal != "{" {
+		t.Fatalf("first token = %#v, want left brace delimiter", next)
 	}
 }

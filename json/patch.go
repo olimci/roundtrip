@@ -275,7 +275,7 @@ func cloneMetaFromNode(n Node) *Meta {
 }
 
 func encodeMeta(value any, indent string, syntax SyntaxOptions) (*Meta, error) {
-	n, tokens, err := encode(value, indent, 0)
+	n, tokens, err := encode(value, indent, 0, syntax)
 	if err != nil {
 		return nil, err
 	}
@@ -288,9 +288,6 @@ func encodeMeta(value any, indent string, syntax SyntaxOptions) (*Meta, error) {
 
 func jsonNodesEqual(a, b Node) bool {
 	if a.node.Type != b.node.Type {
-		if a.node.Type == NodeTypeNumber && b.node.Type == NodeTypeNumber {
-			return jsonNumbersEqual(a.node.Start.Value.Literal, b.node.Start.Value.Literal)
-		}
 		return false
 	}
 	switch a.node.Type {

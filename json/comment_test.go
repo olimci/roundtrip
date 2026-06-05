@@ -60,7 +60,7 @@ func TestCommentAccessors(t *testing.T) {
 		t.Fatalf("DecodeMeta: %v", err)
 	}
 
-	if got := m.Comments().Leading.Text(); got != "file leading" {
+	if got := m.Comments().Leading.Text(); got != " file leading" {
 		t.Fatalf("meta leading comments = %q", got)
 	}
 
@@ -68,21 +68,21 @@ func TestCommentAccessors(t *testing.T) {
 	if !ok {
 		t.Fatal("missing field a")
 	}
-	if got := field.Comments().Leading.Text(); got != "field leading" {
+	if got := field.Comments().Leading.Text(); got != " field leading" {
 		t.Fatalf("field leading comments = %q", got)
 	}
-	if got := field.Comments().Trailing.Text(); got != "value trailing" {
+	if got := field.Comments().Trailing.Text(); got != " value trailing " {
 		t.Fatalf("field trailing comments = %q", got)
 	}
 	key, _ := field.Key()
-	if got := key.Comments().Trailing.Text(); got != "key trailing" {
+	if got := key.Comments().Trailing.Text(); got != " key trailing " {
 		t.Fatalf("key trailing comments = %q", got)
 	}
 	value, _ := field.Value()
-	if got := value.Comments().Leading.Text(); got != "value leading" {
+	if got := value.Comments().Leading.Text(); got != " value leading " {
 		t.Fatalf("value leading comments = %q", got)
 	}
-	if got := value.Comments().Trailing.Text(); got != "value trailing" {
+	if got := value.Comments().Trailing.Text(); got != " value trailing " {
 		t.Fatalf("value trailing comments = %q", got)
 	}
 
@@ -94,22 +94,22 @@ func TestCommentAccessors(t *testing.T) {
 	if !ok {
 		t.Fatal("missing array element")
 	}
-	if got := element.Comments().Leading.Text(); got != "element leading" {
+	if got := element.Comments().Leading.Text(); got != " element leading" {
 		t.Fatalf("element leading comments = %q", got)
 	}
 	item, _ := element.Value()
-	if got := item.Comments().Trailing.Text(); got != "element trailing" {
+	if got := item.Comments().Trailing.Text(); got != " element trailing " {
 		t.Fatalf("element value trailing comments = %q", got)
 	}
 	c, ok := item.Comments().First()
 	if !ok {
 		t.Fatal("missing first element value comment")
 	}
-	if got := c.Text(); got != "element leading" {
+	if got := c.Text(); got != " element leading" {
 		t.Fatalf("first element value comment = %q", got)
 	}
 
-	if got := m.Root().Comments().Dangling.Text(); got != "dangling" {
+	if got := m.Root().Comments().Dangling.Text(); got != " dangling" {
 		t.Fatalf("root dangling comments = %q", got)
 	}
 }
@@ -127,8 +127,45 @@ func TestCommentTextJoinsSourceOrder(t *testing.T) {
 	if !ok {
 		t.Fatal("missing array value")
 	}
-	if got := item.Comments().Leading.Text(); got != "first\nsecond" {
+	if got := item.Comments().Leading.Text(); got != " first\n second" {
 		t.Fatalf("joined comments = %q", got)
+	}
+}
+
+func TestReplaceTextPreservesCommentForm(t *testing.T) {
+	m, err := NewJSONCDecoder(strings.NewReader(`{
+  // old
+  "a": /* block */ 1
+}`)).DecodeMeta()
+	if err != nil {
+		t.Fatalf("DecodeMeta: %v", err)
+	}
+
+	field, ok := m.Root().ObjectFieldNode("a")
+	if !ok {
+		t.Fatal("missing field a")
+	}
+	line := field.Comments().Leading[0]
+	if err := line.ReplaceText(" exact"); err != nil {
+		t.Fatalf("ReplaceText line: %v", err)
+	}
+	if got := line.elem.Value.Literal; got != "// exact" {
+		t.Fatalf("line literal = %q", got)
+	}
+	if err := line.ReplaceText("bad\ntext"); err == nil {
+		t.Fatal("line ReplaceText accepted newline")
+	}
+
+	value, ok := field.Value()
+	if !ok {
+		t.Fatal("missing field value")
+	}
+	block := value.Comments().Leading[0]
+	if err := block.ReplaceText(" exact block "); err != nil {
+		t.Fatalf("ReplaceText block: %v", err)
+	}
+	if got := block.elem.Value.Literal; got != "/* exact block */" {
+		t.Fatalf("block literal = %q", got)
 	}
 }
 
@@ -152,7 +189,7 @@ func TestReplaceInsideWrapperPreservesJSONDepth(t *testing.T) {
 	want := `{
   "items": [
     {
-      "nested": 2
+      "nested": 2,
     }
   ]
 }`
@@ -182,18 +219,18 @@ func TestCommentsSurviveObjectValueReplacementAndRename(t *testing.T) {
 	if !ok {
 		t.Fatal("missing renamed field")
 	}
-	if got := field.Comments().Leading.Text(); got != "field leading" {
+	if got := field.Comments().Leading.Text(); got != " field leading" {
 		t.Fatalf("field leading comments = %q", got)
 	}
-	if got := field.Comments().Trailing.Text(); got != "value trailing" {
+	if got := field.Comments().Trailing.Text(); got != " value trailing " {
 		t.Fatalf("field trailing comments = %q", got)
 	}
 	key, _ := field.Key()
-	if got := key.Comments().Trailing.Text(); got != "key trailing" {
+	if got := key.Comments().Trailing.Text(); got != " key trailing " {
 		t.Fatalf("key trailing comments = %q", got)
 	}
 	value, _ := field.Value()
-	if got := value.Comments().Leading.Text(); got != "value leading" {
+	if got := value.Comments().Leading.Text(); got != " value leading " {
 		t.Fatalf("value leading comments = %q", got)
 	}
 
@@ -233,10 +270,10 @@ func TestCommentsSurviveInsertAndSiblingRemoval(t *testing.T) {
 	if !ok {
 		t.Fatal("missing keep field")
 	}
-	if got := keep.Comments().Leading.Text(); got != "keep leading" {
+	if got := keep.Comments().Leading.Text(); got != " keep leading" {
 		t.Fatalf("keep leading comments = %q", got)
 	}
-	if got := keep.Comments().Trailing.Text(); got != "keep trailing" {
+	if got := keep.Comments().Trailing.Text(); got != " keep trailing " {
 		t.Fatalf("keep trailing comments = %q", got)
 	}
 
@@ -245,10 +282,10 @@ func TestCommentsSurviveInsertAndSiblingRemoval(t *testing.T) {
 	if !ok {
 		t.Fatal("missing remaining array item")
 	}
-	if got := item.Comments().Leading.Text(); got != "item leading" {
+	if got := item.Comments().Leading.Text(); got != " item leading" {
 		t.Fatalf("item leading comments = %q", got)
 	}
-	if got := item.Comments().Trailing.Text(); got != "item trailing" {
+	if got := item.Comments().Trailing.Text(); got != " item trailing " {
 		t.Fatalf("item trailing comments = %q", got)
 	}
 	if err := array.RemoveArrayValue(1); err != nil {

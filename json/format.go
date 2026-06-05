@@ -3,20 +3,34 @@ package json
 import (
 	"bytes"
 	"strings"
-	"unicode/utf8"
 )
 
 // Valid reports whether data is a complete strict JSON value.
 func Valid(data []byte) bool {
-	_, err := NewDecoder(bytes.NewReader(data)).DecodeMeta()
+	return ValidWithOptions(data, SyntaxOptions{})
+}
+
+// ValidWithOptions reports whether data is a complete JSON value for opts.
+func ValidWithOptions(data []byte, opts SyntaxOptions) bool {
+	d := NewDecoder(bytes.NewReader(data))
+	d.SyntaxOptions = opts
+	_, err := d.DecodeMeta()
 	return err == nil
 }
 
 // Compact appends src to dst with insignificant whitespace removed.
 //
-// dst must be non-nil. Compact accepts JSON5 syntax and preserves comments.
+// dst must be non-nil. Compact accepts strict JSON.
 func Compact(dst *bytes.Buffer, src []byte) error {
-	m, err := NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
+	return CompactWithOptions(dst, src, SyntaxOptions{})
+}
+
+// CompactWithOptions appends src to dst with insignificant whitespace removed.
+//
+// dst must be non-nil. CompactWithOptions accepts syntax enabled by opts and
+// preserves comments.
+func CompactWithOptions(dst *bytes.Buffer, src []byte, opts SyntaxOptions) error {
+	m, err := decodeMetaWithOptions(src, opts)
 	if err != nil {
 		return err
 	}
@@ -38,9 +52,17 @@ func Compact(dst *bytes.Buffer, src []byte) error {
 
 // Indent appends an indented form of src to dst.
 //
-// dst must be non-nil. Indent accepts JSON5 syntax and preserves comments.
+// dst must be non-nil. Indent accepts strict JSON.
 func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
-	m, err := NewJSON5Decoder(bytes.NewReader(src)).DecodeMeta()
+	return IndentWithOptions(dst, src, prefix, indent, SyntaxOptions{})
+}
+
+// IndentWithOptions appends an indented form of src to dst.
+//
+// dst must be non-nil. IndentWithOptions accepts syntax enabled by opts and
+// preserves comments.
+func IndentWithOptions(dst *bytes.Buffer, src []byte, prefix, indent string, opts SyntaxOptions) error {
+	m, err := decodeMetaWithOptions(src, opts)
 	if err != nil {
 		return err
 	}
@@ -48,23 +70,27 @@ func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 	tokens := formatTokens(m)
 	for i, t := range tokens {
 		switch t.Type {
-		case TokenLeftBrace, TokenLeftBracket:
-			dst.WriteString(t.Literal)
-			if i+1 < len(tokens) && tokens[i+1].Type != TokenRightBrace && tokens[i+1].Type != TokenRightBracket {
-				writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i)+1)
+		case TokenDelim:
+			if isOpenDelim(t) {
+				dst.WriteString(t.Literal)
+				if i+1 < len(tokens) && !isCloseDelim(tokens[i+1]) {
+					writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i)+1)
+				}
+			} else if isCloseDelim(t) {
+				if i > 0 && !isOpenDelim(tokens[i-1]) {
+					writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i)-1)
+				}
+				dst.WriteString(t.Literal)
+			} else {
+				dst.WriteString(t.Literal)
 			}
-		case TokenRightBrace, TokenRightBracket:
-			if i > 0 && tokens[i-1].Type != TokenLeftBrace && tokens[i-1].Type != TokenLeftBracket {
-				writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i)-1)
-			}
-			dst.WriteString(t.Literal)
 		case TokenColon:
 			dst.WriteString(": ")
 		case TokenComma:
 			dst.WriteByte(',')
 			if i+1 < len(tokens) && tokens[i+1].Type == TokenComment {
 				dst.WriteByte(' ')
-			} else if i+1 < len(tokens) && (tokens[i+1].Type == TokenRightBrace || tokens[i+1].Type == TokenRightBracket) {
+			} else if i+1 < len(tokens) && isCloseDelim(tokens[i+1]) {
 				continue
 			} else {
 				writeIndentNewline(dst, prefix, indent, formatDepth(tokens, i))
@@ -82,64 +108,38 @@ func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 	return nil
 }
 
+func decodeMetaWithOptions(src []byte, opts SyntaxOptions) (*Meta, error) {
+	d := NewDecoder(bytes.NewReader(src))
+	d.SyntaxOptions = opts
+	return d.DecodeMeta()
+}
+
 // HTMLEscape appends src to dst with HTML-significant characters escaped inside
 // JSON strings.
 //
 // dst must be non-nil.
 func HTMLEscape(dst *bytes.Buffer, src []byte) {
-	inString := false
+	dst.Grow(len(src))
+	dst.Write(appendHTMLEscape(dst.AvailableBuffer(), src))
+}
+
+func appendHTMLEscape(dst, src []byte) []byte {
+	const hex = "0123456789abcdef"
+
 	start := 0
-	for i := 0; i < len(src); {
-		b := src[i]
-		if !inString {
-			if b == '"' {
-				inString = true
-			}
-			i++
-			continue
+	for i, c := range src {
+		if c == '<' || c == '>' || c == '&' {
+			dst = append(dst, src[start:i]...)
+			dst = append(dst, '\\', 'u', '0', '0', hex[c>>4], hex[c&0xf])
+			start = i + 1
 		}
-		if b == '\\' {
-			i += 2
-			continue
+		if c == 0xe2 && i+2 < len(src) && src[i+1] == 0x80 && src[i+2]&^1 == 0xa8 {
+			dst = append(dst, src[start:i]...)
+			dst = append(dst, '\\', 'u', '2', '0', '2', hex[src[i+2]&0xf])
+			start = i + len("\u2029")
 		}
-		if b == '"' {
-			inString = false
-			i++
-			continue
-		}
-		if b < utf8.RuneSelf {
-			if b != '<' && b != '>' && b != '&' {
-				i++
-				continue
-			}
-			dst.Write(src[start:i])
-			switch b {
-			case '<':
-				dst.WriteString(`\u003c`)
-			case '>':
-				dst.WriteString(`\u003e`)
-			case '&':
-				dst.WriteString(`\u0026`)
-			}
-			i++
-			start = i
-			continue
-		}
-		r, size := utf8.DecodeRune(src[i:])
-		if r == '\u2028' || r == '\u2029' {
-			dst.Write(src[start:i])
-			if r == '\u2028' {
-				dst.WriteString(`\u2028`)
-			} else {
-				dst.WriteString(`\u2029`)
-			}
-			i += size
-			start = i
-			continue
-		}
-		i += size
 	}
-	dst.Write(src[start:])
+	return append(dst, src[start:]...)
 }
 
 func formatTokens(m *Meta) []token {
@@ -158,10 +158,10 @@ func formatTokens(m *Meta) []token {
 func formatDepth(tokens []token, index int) int {
 	depth := 0
 	for _, t := range tokens[:index] {
-		switch t.Type {
-		case TokenLeftBrace, TokenLeftBracket:
+		switch {
+		case isOpenDelim(t):
 			depth++
-		case TokenRightBrace, TokenRightBracket:
+		case isCloseDelim(t):
 			depth--
 		}
 	}

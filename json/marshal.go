@@ -216,20 +216,37 @@ func isZeroValue(v reflect.Value, isZero func(reflect.Value) bool) bool {
 	return v.IsZero()
 }
 
-func mapKeyString(v reflect.Value) (string, bool) {
-	if m, ok := textMarshaler(v); ok {
-		b, err := m.MarshalText()
-		return string(b), err == nil
-	}
+func mapKeyString(v reflect.Value) (string, error) {
 	switch v.Kind() {
 	case reflect.String:
-		return v.String(), true
+		return v.String(), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return strconv.FormatInt(v.Int(), 10), true
+		if m, ok := textMarshaler(v); ok {
+			b, err := m.MarshalText()
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}
+		return strconv.FormatInt(v.Int(), 10), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return strconv.FormatUint(v.Uint(), 10), true
+		if m, ok := textMarshaler(v); ok {
+			b, err := m.MarshalText()
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}
+		return strconv.FormatUint(v.Uint(), 10), nil
 	}
-	return "", false
+	if m, ok := textMarshaler(v); ok {
+		b, err := m.MarshalText()
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	panic("unexpected map key type")
 }
 
 func mapKeyTypeSupported(t reflect.Type) bool {
@@ -239,7 +256,7 @@ func mapKeyTypeSupported(t reflect.Type) bool {
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return true
 	}
-	return t.Implements(textMarshalerType) || reflect.PointerTo(t).Implements(textMarshalerType)
+	return t.Implements(textMarshalerType)
 }
 
 var structFieldCache sync.Map

@@ -81,14 +81,8 @@ func (l *lexer) scanToken() token {
 		return l.consumeSingle(TokenColon)
 	case ',':
 		return l.consumeSingle(TokenComma)
-	case '{':
-		return l.consumeSingle(TokenLeftBrace)
-	case '}':
-		return l.consumeSingle(TokenRightBrace)
-	case '[':
-		return l.consumeSingle(TokenLeftBracket)
-	case ']':
-		return l.consumeSingle(TokenRightBracket)
+	case '{', '}', '[', ']':
+		return l.consumeSingle(TokenDelim)
 	case '/':
 		if l.assert("//") {
 			return l.consumeComment()

@@ -36,6 +36,30 @@ func isNumberDelimiter(r rune) bool {
 	}
 }
 
+func isLeftBrace(t token) bool {
+	return t.Type == TokenDelim && t.Literal == "{"
+}
+
+func isRightBrace(t token) bool {
+	return t.Type == TokenDelim && t.Literal == "}"
+}
+
+func isLeftBracket(t token) bool {
+	return t.Type == TokenDelim && t.Literal == "["
+}
+
+func isRightBracket(t token) bool {
+	return t.Type == TokenDelim && t.Literal == "]"
+}
+
+func isOpenDelim(t token) bool {
+	return isLeftBrace(t) || isLeftBracket(t)
+}
+
+func isCloseDelim(t token) bool {
+	return isRightBrace(t) || isRightBracket(t)
+}
+
 func validNumber(s string) bool {
 	if s == "" {
 		return false

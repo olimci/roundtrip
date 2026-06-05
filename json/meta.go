@@ -3,7 +3,6 @@ package json
 import (
 	"errors"
 	"iter"
-	"strconv"
 	"strings"
 
 	"github.com/olimci/roundtrip/internal/list"
@@ -117,7 +116,7 @@ func (n Node) Replace(v any) error {
 		return n.replaceWithNode(value)
 	}
 
-	newNode, tokens, err := encode(v, n.meta.Indent, n.depth())
+	newNode, tokens, err := encode(v, n.meta.Indent, n.depth(), n.meta.syntax)
 	if err != nil {
 		return err
 	}
@@ -128,6 +127,9 @@ func (n Node) Replace(v any) error {
 }
 
 func (n Node) replaceWithNode(value Node) error {
+	if err := validateNodeSyntax(value, n.meta.syntax); err != nil {
+		return err
+	}
 	newNode, tokens := value.node.Clone()
 	n.meta.SST.Tokens.ReplaceRange(n.node.Start, n.node.End, tokens)
 	*n.node = *newNode
@@ -170,10 +172,7 @@ func (n Node) ObjectFields() iter.Seq2[string, Node] {
 		}
 		for _, field := range n.node.Children {
 			key := objectFieldKey(field)
-			name, err := decodeKeyLiteral(key)
-			if err != nil {
-				continue
-			}
+			name := mustDecodeKeyLiteral(key)
 			if !yield(name, Node{meta: n.meta, node: field}) {
 				return
 			}
@@ -226,7 +225,10 @@ func (n Node) InsertObjectField(name string, value any) error {
 	if n.node.Type != NodeTypeObject {
 		return ErrWrongNodeType
 	}
-	field, encoded, err := encodeObjectField(name, value, n.meta.Indent, n.depth()+1, n.fieldValuePrefix())
+	if _, exists := n.ObjectField(name); exists {
+		return ErrObjectFieldExists
+	}
+	field, encoded, err := encodeObjectField(name, value, n.meta.Indent, n.depth()+1, n.fieldValuePrefix(), n.meta.syntax)
 	if err != nil {
 		return err
 	}
@@ -247,7 +249,13 @@ func (n Node) insertObjectFieldNode(name string, value Node) error {
 	if n.node.Type != NodeTypeObject {
 		return ErrWrongNodeType
 	}
-	key, tokens, err := encode(name, n.meta.Indent, n.depth()+1)
+	if _, exists := n.ObjectField(name); exists {
+		return ErrObjectFieldExists
+	}
+	if err := validateNodeSyntax(value, n.meta.syntax); err != nil {
+		return err
+	}
+	key, tokens, err := encode(name, n.meta.Indent, n.depth()+1, n.meta.syntax)
 	if err != nil {
 		return err
 	}
@@ -297,8 +305,13 @@ func (n Node) RenameObjectField(oldName, newName string) error {
 	if !ok {
 		return ErrObjectFieldNotFound
 	}
+	if oldName != newName {
+		if _, exists := n.ObjectField(newName); exists {
+			return ErrObjectFieldExists
+		}
+	}
 	key := objectFieldKey(field)
-	newKey, tokens, err := encode(newName, n.meta.Indent, n.depth())
+	newKey, tokens, err := encode(newName, n.meta.Indent, n.depth(), n.meta.syntax)
 	if err != nil {
 		return err
 	}
@@ -354,7 +367,7 @@ func (n Node) InsertArrayValue(index int, value any) error {
 	if index < 0 || index > len(n.node.Children) {
 		return ErrArrayIndexOutOfRange
 	}
-	element, tokens, err := encodeArrayElement(value, n.meta.Indent, n.depth()+1)
+	element, tokens, err := encodeArrayElement(value, n.meta.Indent, n.depth()+1, n.meta.syntax)
 	if err != nil {
 		return err
 	}
@@ -387,6 +400,9 @@ func (n Node) insertArrayValueNode(index int, value Node) error {
 	}
 	if index < 0 || index > len(n.node.Children) {
 		return ErrArrayIndexOutOfRange
+	}
+	if err := validateNodeSyntax(value, n.meta.syntax); err != nil {
+		return err
 	}
 	valueNode, tokens := value.node.Clone()
 	start := tokens.PushFront(token{Type: TokenAnchor})
@@ -465,19 +481,26 @@ func (n Node) depth() int {
 func (n Node) objectFieldIndex(name string) (int, *node, bool) {
 	for i, field := range n.node.Children {
 		key := objectFieldKey(field)
-		keyName, err := decodeKeyLiteral(key)
-		if err == nil && keyName == name {
+		if mustDecodeKeyLiteral(key) == name {
 			return i, field, true
 		}
 	}
 	return 0, nil, false
 }
 
+func mustDecodeKeyLiteral(key *node) string {
+	name, err := decodeKeyLiteral(key)
+	if err != nil {
+		panic(err)
+	}
+	return name
+}
+
 func decodeKeyLiteral(key *node) (string, error) {
 	if key.Start.Value.Type == TokenIdentifier {
 		return key.Start.Value.Literal, nil
 	}
-	return strconv.Unquote(key.Start.Value.Literal)
+	return unquoteString(key.Start.Value.Literal, JSON5SyntaxOptions())
 }
 
 func (n Node) leadingGap(childIndex int) *list.List[token] {
@@ -509,6 +532,11 @@ func (n Node) leadingGap(childIndex int) *list.List[token] {
 
 func (n Node) removeChildRange(index int) (*list.Elem[token], *list.Elem[token]) {
 	if len(n.node.Children) == 1 {
+		for e := n.node.Children[index].End.Next; e != nil && e != n.node.End; e = e.Next {
+			if e.Value.Type == TokenComma {
+				return n.node.Children[index].Start, e
+			}
+		}
 		return n.node.Children[index].Start, n.node.Children[index].End
 	}
 	if index < len(n.node.Children)-1 {
@@ -548,12 +576,17 @@ func objectFields(n *node) iter.Seq2[*node, *node] {
 	}
 }
 
-func encodeObjectField(name string, value any, indent string, depth int, valuePrefix string) (*node, *list.List[token], error) {
-	key, tokens, err := encode(name, indent, depth)
+func validateNodeSyntax(n Node, syntax SyntaxOptions) error {
+	_, err := decodeMetaWithOptions(n.Bytes(), syntax)
+	return err
+}
+
+func encodeObjectField(name string, value any, indent string, depth int, valuePrefix string, syntax SyntaxOptions) (*node, *list.List[token], error) {
+	key, tokens, err := encode(name, indent, depth, syntax)
 	if err != nil {
 		return nil, nil, err
 	}
-	valueNode, valueTokens, err := encode(value, indent, depth)
+	valueNode, valueTokens, err := encode(value, indent, depth, syntax)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -567,8 +600,8 @@ func encodeObjectField(name string, value any, indent string, depth int, valuePr
 	return objectFieldNode(key, valueNode, start, end), tokens, nil
 }
 
-func encodeArrayElement(value any, indent string, depth int) (*node, *list.List[token], error) {
-	valueNode, tokens, err := encode(value, indent, depth)
+func encodeArrayElement(value any, indent string, depth int, syntax SyntaxOptions) (*node, *list.List[token], error) {
+	valueNode, tokens, err := encode(value, indent, depth, syntax)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -686,13 +719,12 @@ func gapTokens(first, last *list.Elem[token]) *list.List[token] {
 
 func commentText(raw string) string {
 	if after, ok := strings.CutPrefix(raw, "//"); ok {
-		return strings.TrimSpace(after)
+		return after
 	}
 	if strings.HasPrefix(raw, "/*") && strings.HasSuffix(raw, "*/") {
-		raw = strings.TrimPrefix(strings.TrimSuffix(raw, "*/"), "/*")
-		return strings.TrimSpace(raw)
+		return raw[2 : len(raw)-2]
 	}
-	return raw
+	panic("invalid comment literal")
 }
 
 func commentLiteralText(lit, text string) (string, error) {
@@ -700,13 +732,13 @@ func commentLiteralText(lit, text string) (string, error) {
 		if strings.Contains(text, "*/") {
 			return "", ErrInvalidComment
 		}
-		return "/* " + text + " */", nil
+		return "/*" + text + "*/", nil
 	}
-	if strings.ContainsAny(text, "\r\n") {
-		if strings.Contains(text, "*/") {
+	if strings.HasPrefix(lit, "//") {
+		if strings.ContainsAny(text, "\r\n") {
 			return "", ErrInvalidComment
 		}
-		return "/* " + text + " */", nil
+		return "//" + text, nil
 	}
-	return "// " + text, nil
+	panic("invalid comment literal")
 }

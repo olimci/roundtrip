@@ -3,7 +3,9 @@ package json
 import (
 	"bytes"
 	stdjson "encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -52,6 +54,24 @@ func (c *customJSON) UnmarshalJSON(b []byte) error {
 	}
 	c.Value = strings.TrimPrefix(s, "custom:")
 	return nil
+}
+
+type errorJSON struct{}
+
+func (errorJSON) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("no json")
+}
+
+type invalidJSON struct{}
+
+func (invalidJSON) MarshalJSON() ([]byte, error) {
+	return []byte(`{`), nil
+}
+
+type errorText int
+
+func (e errorText) MarshalText() ([]byte, error) {
+	return nil, fmt.Errorf("no text %d", e)
 }
 
 type writerFunc func([]byte) (int, error)
@@ -255,8 +275,115 @@ func TestMarshalerEscapesHTMLParity(t *testing.T) {
 		t.Fatalf("stdlib Encode with disabled HTML escaping: %v", err)
 	}
 
-	if !bytes.Equal(gotBuf.Bytes(), bytes.TrimSuffix(wantBuf.Bytes(), []byte("\n"))) {
+	if !bytes.Equal(gotBuf.Bytes(), wantBuf.Bytes()) {
 		t.Fatalf("Encode mismatch with disabled HTML escaping:\ngot  %s\nwant %s", gotBuf.Bytes(), wantBuf.Bytes())
+	}
+}
+
+func TestMarshalStringEscapingParity(t *testing.T) {
+	values := []any{
+		`<&>"'\`,
+		"controls:\x00\x01\b\f\n\r\t\x1f",
+		"invalid:\xff\xfe",
+		"line separators:\u2028\u2029",
+		map[string]string{
+			`<&>`:            "html",
+			"invalid:\xff":   "bytes",
+			"line:\u2028key": "separator",
+		},
+		struct {
+			HTML    string `json:"<&>"`
+			Invalid string `json:"invalid"`
+		}{
+			HTML:    "<&>",
+			Invalid: "invalid:\xff",
+		},
+		customJSON{Value: "<&>\u2028"},
+		textKey(7),
+	}
+
+	for _, v := range values {
+		got, gotErr := Marshal(v)
+		want, wantErr := stdjson.Marshal(v)
+		if (gotErr != nil) != (wantErr != nil) {
+			t.Fatalf("Marshal error mismatch for %#v:\ngot  %v\nwant %v", v, gotErr, wantErr)
+		}
+		if gotErr != nil {
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("Marshal mismatch for %#v:\ngot  %s\nwant %s", v, got, want)
+		}
+	}
+}
+
+func TestEncoderStringEscapingParity(t *testing.T) {
+	v := map[string]string{
+		"<&>":            "<&>",
+		"invalid:\xff":   "invalid:\xff",
+		"line:\u2028key": "line:\u2029value",
+	}
+
+	var got bytes.Buffer
+	gotEncoder := NewEncoder(&got)
+	gotEncoder.SetEscapeHTML(false)
+	if err := gotEncoder.Encode(v); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	var want bytes.Buffer
+	wantEncoder := stdjson.NewEncoder(&want)
+	wantEncoder.SetEscapeHTML(false)
+	if err := wantEncoder.Encode(v); err != nil {
+		t.Fatalf("stdlib Encode: %v", err)
+	}
+
+	if !bytes.Equal(got.Bytes(), want.Bytes()) {
+		t.Fatalf("Encode mismatch:\ngot  %s\nwant %s", got.Bytes(), want.Bytes())
+	}
+}
+
+func TestHTMLEscapeParity(t *testing.T) {
+	inputs := [][]byte{
+		[]byte(`{"Name":"<b>HTML content</b>"}`),
+		[]byte(`{"x":"<&>\u003c\u2028` + "\u2028\u2029" + `"}`),
+		[]byte(`["<",{"&":">"}]`),
+	}
+
+	for _, input := range inputs {
+		var got bytes.Buffer
+		HTMLEscape(&got, input)
+
+		var want bytes.Buffer
+		stdjson.HTMLEscape(&want, input)
+
+		if !bytes.Equal(got.Bytes(), want.Bytes()) {
+			t.Fatalf("HTMLEscape mismatch for %s:\ngot  %s\nwant %s", input, got.Bytes(), want.Bytes())
+		}
+	}
+}
+
+func TestMarshalErrorParity(t *testing.T) {
+	tests := []any{
+		func() {},
+		make(chan int),
+		math.NaN(),
+		math.Inf(1),
+		errorJSON{},
+		invalidJSON{},
+		errorText(1),
+		map[errorText]int{1: 1},
+	}
+
+	for _, v := range tests {
+		got, gotErr := Marshal(v)
+		want, wantErr := stdjson.Marshal(v)
+		if gotErr == nil || wantErr == nil {
+			t.Fatalf("Marshal(%T) errors:\ngot  %v with %s\nwant %v with %s", v, gotErr, got, wantErr, want)
+		}
+		if reflect.TypeOf(gotErr).String() != reflect.TypeOf(wantErr).String() {
+			t.Fatalf("Marshal(%T) error type mismatch:\ngot  %T %v\nwant %T %v", v, gotErr, gotErr, wantErr, wantErr)
+		}
 	}
 }
 

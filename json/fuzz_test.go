@@ -268,7 +268,11 @@ func FuzzMetaMutations(f *testing.F) {
 					continue
 				}
 				n := nodes[g.intn(len(nodes))]
-				if err := n.InsertObjectField(g.objectKeyName(), g.value(3)); err != nil {
+				name := g.objectKeyName()
+				if _, exists := n.ObjectField(name); exists {
+					continue
+				}
+				if err := n.InsertObjectField(name, g.value(3)); err != nil {
 					t.Fatalf("InsertObjectField failed: %v", err)
 				}
 			case 2:
@@ -281,7 +285,14 @@ func FuzzMetaMutations(f *testing.F) {
 				if len(names) == 0 {
 					continue
 				}
-				if err := n.RenameObjectField(names[g.intn(len(names))], g.objectKeyName()); err != nil {
+				oldName := names[g.intn(len(names))]
+				newName := g.objectKeyName()
+				if oldName != newName {
+					if _, exists := n.ObjectField(newName); exists {
+						continue
+					}
+				}
+				if err := n.RenameObjectField(oldName, newName); err != nil {
 					t.Fatalf("RenameObjectField failed: %v", err)
 				}
 			case 3:
@@ -762,7 +773,11 @@ func FuzzComments(f *testing.F) {
 		if err := m.Root().ReplaceAt(g.value(2), "items", 0); err != nil {
 			t.Fatalf("ReplaceAt near comment: %v", err)
 		}
-		if err := m.Root().InsertObjectField(g.objectKeyName(), g.value(2)); err != nil {
+		name := g.objectKeyName()
+		if _, exists := m.Root().ObjectField(name); exists {
+			return
+		}
+		if err := m.Root().InsertObjectField(name, g.value(2)); err != nil {
 			t.Fatalf("InsertObjectField near comments: %v", err)
 		}
 		assertMetaStillRoundTrips(t, m)
@@ -795,15 +810,16 @@ func FuzzFormatFunctions(f *testing.F) {
 			t.Fatalf("stdlib could not marshal generated value: %v", err)
 		}
 		decorated := injectJSONTrivia(input, g, true)
+		json5 := JSON5SyntaxOptions()
 
 		var compacted bytes.Buffer
-		if err := Compact(&compacted, decorated); err != nil {
+		if err := CompactWithOptions(&compacted, decorated, json5); err != nil {
 			t.Fatalf("Compact failed for %s: %v", decorated, err)
 		}
 		assertJSON5BytesDecodeLike(t, compacted.Bytes(), input)
 
 		var indented bytes.Buffer
-		if err := Indent(&indented, decorated, "", "  "); err != nil {
+		if err := IndentWithOptions(&indented, decorated, "", "  ", json5); err != nil {
 			t.Fatalf("Indent failed for %s: %v", decorated, err)
 		}
 		assertJSON5BytesDecodeLike(t, indented.Bytes(), input)
@@ -1561,11 +1577,7 @@ func metaComments(m *Meta) []Comment {
 func (g *jsonGenerator) commentReplacementText() string {
 	n := g.intn(24)
 	var b strings.Builder
-	for i := range n {
-		if i > 0 && g.intn(8) == 0 {
-			b.WriteByte('\n')
-			continue
-		}
+	for range n {
 		b.WriteRune('a' + rune(g.intn(26)))
 	}
 	return b.String()
@@ -1621,7 +1633,7 @@ func assertMetaStillRoundTrips(t *testing.T, m *Meta) {
 
 	out, err := MarshalMeta(m)
 	if err != nil {
-		t.Fatalf("MarshalMeta failed after mutation: %v", err)
+		t.Fatalf("MarshalMeta failed after mutation:\n%s\nerror: %v", m.SST.Root.Bytes(), err)
 	}
 	reparsed, err := NewJSON5Decoder(bytes.NewReader(out)).DecodeMeta()
 	if err != nil {

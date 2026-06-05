@@ -23,7 +23,7 @@ out, err := json.Marshal(dst)
   value, decodes it into `v`, and returns the roundtrippable metadata tree.
 - `func Marshal(v any) ([]byte, error)` encodes `v` as JSON.
 - `func MarshalMeta(m *Meta) ([]byte, error)` writes the exact bytes represented
-  by a metadata tree.
+  by a metadata tree using the tree's parsed syntax options.
 - `type Marshaler interface { MarshalJSON() ([]byte, error) }` is honored by
   encoders.
 - `type Unmarshaler interface { UnmarshalJSON([]byte) error }` is honored by
@@ -87,7 +87,7 @@ err := e.Encode(v)
   syntax options.
 - `func (e *Encoder) Encode(v any) error` writes one encoded value.
 - `func (e *Encoder) EncodeMeta(m *Meta) error` writes the exact bytes
-  represented by `m`.
+  represented by `m` when they are valid for the encoder's syntax options.
 - `func (e *Encoder) SetIndent(prefix, indent string)` formats generated output.
 - `func (e *Encoder) SetEscapeHTML(on bool)` controls escaping of `<`, `>`, `&`,
   U+2028, and U+2029 in generated strings.
@@ -240,9 +240,10 @@ Comments are available when the document was parsed with JSONC or JSON5 comment
 syntax enabled.
 
 - `type Comment` represents one source comment.
-- `func (c Comment) Text() string` returns the comment body without delimiters.
+- `func (c Comment) Text() string` returns the exact comment body without
+  delimiters.
 - `func (c Comment) ReplaceText(text string) error` replaces the body while
-  preserving the original comment style.
+  preserving the original comment style. Line comments reject embedded newlines.
 - `type Comments []Comment`
 - `func (cs Comments) First() (Comment, bool)` returns the first comment.
 - `func (cs Comments) Text() string` joins comment text with newlines.
@@ -281,10 +282,18 @@ Supported patch operations are `add`, `remove`, `replace`, `move`, `copy`, and
 ## Formatting helpers
 
 - `func Valid(data []byte) bool` reports whether `data` is strict JSON.
+- `func ValidWithOptions(data []byte, opts SyntaxOptions) bool` reports whether
+  `data` is valid for `opts`.
 - `func Compact(dst *bytes.Buffer, src []byte) error` removes whitespace from
-  JSON5 input while preserving comments.
+  strict JSON input.
+- `func CompactWithOptions(dst *bytes.Buffer, src []byte, opts SyntaxOptions)
+  error` removes whitespace from input accepted by `opts` while preserving
+  comments.
 - `func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error`
-  reformats JSON5 input while preserving comments and trailing whitespace.
+  reformats strict JSON input while preserving trailing whitespace.
+- `func IndentWithOptions(dst *bytes.Buffer, src []byte, prefix, indent string,
+  opts SyntaxOptions) error` reformats input accepted by `opts` while preserving
+  comments and trailing whitespace.
 - `func HTMLEscape(dst *bytes.Buffer, src []byte)` escapes `<`, `>`, `&`,
   U+2028, and U+2029 inside JSON string literals.
 
@@ -300,10 +309,7 @@ The syntax tree exposes token kinds through `Meta.SST`.
 - `TokenString`
 - `TokenColon`
 - `TokenComma`
-- `TokenLeftBrace`
-- `TokenRightBrace`
-- `TokenLeftBracket`
-- `TokenRightBracket`
+- `TokenDelim`
 - `TokenWhitespace`
 - `TokenNewline`
 - `TokenComment`
@@ -319,6 +325,7 @@ Parsing sentinel errors:
 - `ErrInvalidString`
 - `ErrInvalidNumber`
 - `ErrInvalidSpace`
+- `ErrDuplicateObjectKey`
 
 Tree editing sentinel errors:
 

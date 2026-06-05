@@ -26,14 +26,8 @@ const (
 	TokenColon
 	// TokenComma identifies a comma.
 	TokenComma
-	// TokenLeftBrace identifies a left brace.
-	TokenLeftBrace
-	// TokenRightBrace identifies a right brace.
-	TokenRightBrace
-	// TokenLeftBracket identifies a left bracket.
-	TokenLeftBracket
-	// TokenRightBracket identifies a right bracket.
-	TokenRightBracket
+	// TokenDelim identifies a brace or bracket delimiter.
+	TokenDelim
 	// TokenWhitespace identifies horizontal whitespace.
 	TokenWhitespace
 	// TokenNewline identifies a newline.
@@ -87,5 +81,5 @@ var nodeSymbols = []string{
 }
 
 var tokenSymbols = []string{
-	"ILLEGAL", "EOF", "IDENTIFIER", "NUMBER", "STRING", "COLON", "COMMA", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_BRACKET", "RIGHT_BRACKET", "WHITESPACE", "NEWLINE", "COMMENT",
+	"ILLEGAL", "EOF", "IDENTIFIER", "NUMBER", "STRING", "COLON", "COMMA", "DELIM", "WHITESPACE", "NEWLINE", "COMMENT",
 }

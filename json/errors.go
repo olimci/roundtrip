@@ -17,6 +17,8 @@ var (
 	ErrInvalidNumber = errors.New("invalid number")
 	// ErrInvalidSpace reports whitespace that is not valid for the active syntax options.
 	ErrInvalidSpace = errors.New("invalid whitespace")
+	// ErrDuplicateObjectKey reports an object key repeated in the same object.
+	ErrDuplicateObjectKey = errors.New("duplicate object key")
 )
 
 // ParseError describes a lexer or parser error at a concrete input token.
@@ -109,13 +111,18 @@ func (e *UnsupportedValueError) Error() string {
 
 // MarshalerError wraps an error returned by a Marshaler implementation.
 type MarshalerError struct {
-	Type reflect.Type
-	Err  error
+	Type       reflect.Type
+	Err        error
+	SourceFunc string
 }
 
 // Error returns the formatted marshaler error.
 func (e *MarshalerError) Error() string {
-	return "json: error calling MarshalJSON for type " + e.Type.String() + ": " + e.Err.Error()
+	sourceFunc := e.SourceFunc
+	if sourceFunc == "" {
+		sourceFunc = "MarshalJSON"
+	}
+	return "json: error calling " + sourceFunc + " for type " + e.Type.String() + ": " + e.Err.Error()
 }
 
 // Unwrap returns the error reported by the Marshaler.
