@@ -1,5 +1,6 @@
 package cursor
 
+// NewCursor returns a cursor positioned at line 1, column 1, offset 0.
 func NewCursor() *Cursor {
 	return &Cursor{
 		Position: Position{
@@ -9,11 +10,15 @@ func NewCursor() *Cursor {
 	}
 }
 
+// Cursor tracks the current input position and one previous position.
+//
+// Cursor methods require a non-nil *Cursor.
 type Cursor struct {
 	Position
 	prev *Position
 }
 
+// Next advances c by r and size bytes.
 func (c *Cursor) Next(r rune, size int) {
 	if c.prev == nil {
 		c.prev = new(Position)
@@ -33,6 +38,7 @@ func (c *Cursor) Next(r rune, size int) {
 	}
 }
 
+// Prev returns c to the previous position, if any.
 func (c *Cursor) Prev() {
 	if c.prev == nil {
 		return
@@ -41,6 +47,7 @@ func (c *Cursor) Prev() {
 	c.prev = nil
 }
 
+// Position is a one-based line and column with a zero-based byte offset.
 type Position struct {
 	Line   int
 	Column int
