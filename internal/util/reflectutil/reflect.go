@@ -2,8 +2,6 @@ package reflectutil
 
 import "reflect"
 
-// TODO: tests...
-
 type ReflectField struct {
 	Name  string
 	Value reflect.Value

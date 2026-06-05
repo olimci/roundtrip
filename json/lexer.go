@@ -18,7 +18,6 @@ func newLexer(r io.Reader) *lexer {
 	}
 }
 
-// todo: is it worth making this streaming?
 func lex(data []byte) iter.Seq[token] {
 	return func(yield func(token) bool) {
 		l := newLexer(bytes.NewReader(data))
