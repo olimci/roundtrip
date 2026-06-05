@@ -25,7 +25,7 @@ type parityStruct struct {
 type textKey int
 
 func (k textKey) MarshalText() ([]byte, error) {
-	return []byte(fmt.Sprintf("key-%02d", k)), nil
+	return fmt.Appendf(nil, "key-%02d", k), nil
 }
 
 func (k *textKey) UnmarshalText(b []byte) error {
@@ -141,11 +141,10 @@ func (z zeroByMethod) IsZero() bool {
 }
 
 type omitOptionsPayload struct {
-	EmptyStruct struct{}      `json:"emptyStruct,omitempty"`
-	ZeroStruct  struct{}      `json:"zeroStruct,omitzero"`
-	Special     zeroByMethod  `json:"special,omitzero"`
-	Regular     zeroByMethod  `json:"regular,omitempty"`
-	Ptr         *zeroByMethod `json:"ptr,omitzero"`
+	ZeroStruct struct{}      `json:"zeroStruct,omitzero"`
+	Special    zeroByMethod  `json:"special,omitzero"`
+	Regular    zeroByMethod  `json:"regular,omitempty"`
+	Ptr        *zeroByMethod `json:"ptr,omitzero"`
 }
 
 func TestMarshalStructFieldResolutionParity(t *testing.T) {

@@ -577,6 +577,297 @@ func FuzzGeneratedJSONUnmarshalTypedParity(f *testing.F) {
 	})
 }
 
+func FuzzPatchAndMerge(f *testing.F) {
+	for _, seed := range [][]byte{
+		{},
+		{0},
+		{1, 2, 3, 4},
+		[]byte("merge patch nested object"),
+		[]byte("json patch generated operation"),
+		[]byte("json patch atomic failure"),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		g := newJSONGenerator(data)
+
+		target, err := generatedMeta(t, g, 5)
+		if err != nil {
+			t.Fatalf("generated target: %v", err)
+		}
+		patch, err := generatedMeta(t, g, 4)
+		if err != nil {
+			t.Fatalf("generated merge patch: %v", err)
+		}
+		if err := target.Merge(patch); err != nil {
+			t.Fatalf("Merge failed: %v", err)
+		}
+		assertMetaStillRoundTrips(t, target)
+
+		target, err = NewJSON5Decoder(strings.NewReader(`{"items":[0,1],"meta":{"name":"old","keep":true}}`)).DecodeMeta()
+		if err != nil {
+			t.Fatalf("Decode patch target: %v", err)
+		}
+		if err := target.Patch(g.patchOperation(t)...); err != nil {
+			t.Fatalf("Patch failed: %v", err)
+		}
+		assertMetaStillRoundTrips(t, target)
+
+		target, err = NewJSON5Decoder(strings.NewReader(`{"items":[0,1],"meta":{"name":"old"}}`)).DecodeMeta()
+		if err != nil {
+			t.Fatalf("Decode atomic patch target: %v", err)
+		}
+		before, err := MarshalMeta(target)
+		if err != nil {
+			t.Fatalf("Marshal atomic patch target: %v", err)
+		}
+		err = target.Patch(
+			Patch{Op: "add", Path: "/items/-", Value: g.value(2)},
+			Patch{Op: "test", Path: "/meta/name", Value: g.value(2)},
+		)
+		if err == nil {
+			t.Fatalf("failing patch sequence succeeded")
+		}
+		after, err := MarshalMeta(target)
+		if err != nil {
+			t.Fatalf("Marshal after failed patch: %v", err)
+		}
+		if !bytes.Equal(after, before) {
+			t.Fatalf("failed patch mutated target:\nbefore %s\nafter  %s", before, after)
+		}
+	})
+}
+
+func FuzzPathAndJSONPointer(f *testing.F) {
+	for _, seed := range [][]byte{
+		{},
+		{0},
+		{1, 2, 3, 4},
+		[]byte("pointer escaped keys"),
+		[]byte("path mutations"),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		g := newJSONGenerator(data)
+		input := generatedPointerDocument(t, g)
+
+		m, err := NewDecoder(bytes.NewReader(input)).DecodeMeta()
+		if err != nil {
+			t.Fatalf("Decode pointer document %s: %v", input, err)
+		}
+
+		cases := []struct {
+			path    []any
+			pointer string
+		}{
+			{nil, ""},
+			{[]any{""}, "/"},
+			{[]any{"a/b"}, "/a~1b"},
+			{[]any{"m~n"}, "/m~0n"},
+			{[]any{"0"}, "/0"},
+			{[]any{"items", 0}, "/items/0"},
+			{[]any{"items", 1}, "/items/1"},
+			{[]any{"nested", "a/b", 0}, "/nested/a~1b/0"},
+		}
+		for _, tc := range cases {
+			var pathNode Node
+			if tc.path == nil {
+				pathNode = m.Root()
+			} else {
+				pathNode, err = m.Root().At(tc.path...)
+				if err != nil {
+					t.Fatalf("At(%v): %v", tc.path, err)
+				}
+			}
+			pointerNode, err := m.Root().JSONPointer(tc.pointer)
+			if err != nil {
+				t.Fatalf("JSONPointer(%q): %v", tc.pointer, err)
+			}
+			assertCanonicalJSONEqual(t, pathNode.Bytes(), pointerNode.Bytes())
+		}
+
+		pathMeta, pointerMeta := decodeMetaPair(t, input)
+		value := g.value(2)
+		if err := pathMeta.Root().ReplaceAt(value, "nested", "a/b", 0); err != nil {
+			t.Fatalf("ReplaceAt: %v", err)
+		}
+		if err := pointerMeta.Root().ReplaceJSONPointer("/nested/a~1b/0", value); err != nil {
+			t.Fatalf("ReplaceJSONPointer: %v", err)
+		}
+		assertMetaJSONEqual(t, pathMeta, pointerMeta)
+
+		pathMeta, pointerMeta = decodeMetaPair(t, input)
+		value = g.value(2)
+		if err := pathMeta.Root().InsertAt(value, "items", Append); err != nil {
+			t.Fatalf("InsertAt append: %v", err)
+		}
+		if err := pointerMeta.Root().InsertJSONPointer("/items/-", value); err != nil {
+			t.Fatalf("InsertJSONPointer append: %v", err)
+		}
+		assertMetaJSONEqual(t, pathMeta, pointerMeta)
+
+		pathMeta, pointerMeta = decodeMetaPair(t, input)
+		if err := pathMeta.Root().RemoveAt("a/b"); err != nil {
+			t.Fatalf("RemoveAt: %v", err)
+		}
+		if err := pointerMeta.Root().RemoveJSONPointer("/a~1b"); err != nil {
+			t.Fatalf("RemoveJSONPointer: %v", err)
+		}
+		assertMetaJSONEqual(t, pathMeta, pointerMeta)
+	})
+}
+
+func FuzzComments(f *testing.F) {
+	for _, seed := range [][]byte{
+		{},
+		{0},
+		{1, 2, 3, 4},
+		[]byte("replace comments"),
+		[]byte("mutate near comments"),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		g := newJSONGenerator(data)
+		input := fmt.Sprintf(`// %s
+{
+	/* %s */ "a": /* %s */ 1, // %s
+	"items": [
+		/* %s */ 2
+	] /* %s */
+}
+// %s
+`, g.commentText(), g.commentText(), g.commentText(), g.commentText(), g.commentText(), g.commentText(), g.commentText())
+
+		m, err := NewJSON5Decoder(strings.NewReader(input)).DecodeMeta()
+		if err != nil {
+			t.Fatalf("Decode comment input: %v\n%s", err, input)
+		}
+
+		comments := metaComments(m)
+		if len(comments) == 0 {
+			t.Fatalf("generated comment input exposed no comments")
+		}
+		for _, c := range comments {
+			if err := c.ReplaceText(g.commentReplacementText()); err != nil {
+				t.Fatalf("ReplaceText failed: %v", err)
+			}
+		}
+		assertMetaStillRoundTrips(t, m)
+
+		if err := m.Root().ReplaceAt(g.value(2), "items", 0); err != nil {
+			t.Fatalf("ReplaceAt near comment: %v", err)
+		}
+		if err := m.Root().InsertObjectField(g.objectKeyName(), g.value(2)); err != nil {
+			t.Fatalf("InsertObjectField near comments: %v", err)
+		}
+		assertMetaStillRoundTrips(t, m)
+
+		for _, c := range metaComments(m) {
+			if strings.Contains(c.elem.Value.Literal, "*/") && !strings.HasSuffix(c.elem.Value.Literal, "*/") {
+				t.Fatalf("invalid block comment literal after mutation: %q", c.elem.Value.Literal)
+			}
+		}
+	})
+}
+
+func FuzzFormatFunctions(f *testing.F) {
+	for _, seed := range [][]byte{
+		{},
+		{0},
+		{1, 2, 3, 4},
+		[]byte("compact json5 comments"),
+		[]byte("indent json5 comments"),
+		[]byte("html escape strings"),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		g := newJSONGenerator(data)
+		value := g.value(5)
+		input, err := stdjson.Marshal(value)
+		if err != nil {
+			t.Fatalf("stdlib could not marshal generated value: %v", err)
+		}
+		decorated := injectJSONTrivia(input, g, true)
+
+		var compacted bytes.Buffer
+		if err := Compact(&compacted, decorated); err != nil {
+			t.Fatalf("Compact failed for %s: %v", decorated, err)
+		}
+		assertJSON5BytesDecodeLike(t, compacted.Bytes(), input)
+
+		var indented bytes.Buffer
+		if err := Indent(&indented, decorated, "", "  "); err != nil {
+			t.Fatalf("Indent failed for %s: %v", decorated, err)
+		}
+		assertJSON5BytesDecodeLike(t, indented.Bytes(), input)
+
+		if !Valid(input) {
+			t.Fatalf("Valid rejected generated strict JSON: %s", input)
+		}
+
+		stringInput, err := stdjson.Marshal(g.jsonSafeString())
+		if err != nil {
+			t.Fatalf("stdlib could not marshal generated string: %v", err)
+		}
+		var escaped bytes.Buffer
+		HTMLEscape(&escaped, stringInput)
+		assertCanonicalJSONEqual(t, escaped.Bytes(), stringInput)
+	})
+}
+
+func FuzzLexer(f *testing.F) {
+	for _, seed := range [][]byte{
+		{},
+		{0},
+		{1, 2, 3, 4},
+		[]byte("lexer strict json"),
+		[]byte("lexer json5 trivia"),
+		[]byte("lexer invalid bytes"),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		g := newJSONGenerator(data)
+		input, err := stdjson.Marshal(g.value(5))
+		if err != nil {
+			t.Fatalf("stdlib could not marshal generated value: %v", err)
+		}
+		if g.bool() {
+			input = injectJSONTrivia(input, g, true)
+		}
+
+		var joined strings.Builder
+		prevOffset := 0
+		for tok := range lex(input) {
+			if tok.Type == TokenIllegal {
+				t.Fatalf("lexer emitted illegal token for generated input %q at %v", input, tok.Position)
+			}
+			if tok.Position.Offset < prevOffset {
+				t.Fatalf("token offsets moved backwards: %d then %d", prevOffset, tok.Position.Offset)
+			}
+			prevOffset = tok.Position.Offset
+			joined.WriteString(tok.Literal)
+		}
+		if joined.String() != string(input) {
+			t.Fatalf("lexer literals did not reconstruct input:\ngot  %q\nwant %q", joined.String(), input)
+		}
+
+		for tok := range lex(data) {
+			if tok.Position.Offset < 0 {
+				t.Fatalf("lexer emitted negative offset for arbitrary data: %d", tok.Position.Offset)
+			}
+		}
+	})
+}
+
 type generatedPayload struct {
 	Name   string            `json:"name"`
 	Age    int               `json:"age,string"`
@@ -1137,6 +1428,145 @@ func (g *jsonGenerator) json5SingleQuotedString() string {
 			r := 'a' + rune(g.intn(26))
 			b.WriteRune(r)
 		}
+	}
+	return b.String()
+}
+
+func generatedMeta(t *testing.T, g *jsonGenerator, depth int) (*Meta, error) {
+	t.Helper()
+
+	input, err := stdjson.Marshal(g.value(depth))
+	if err != nil {
+		return nil, err
+	}
+	if g.bool() {
+		input = injectJSONTrivia(input, g, true)
+	}
+	return NewJSON5Decoder(bytes.NewReader(input)).DecodeMeta()
+}
+
+func (g *jsonGenerator) patchOperation(t *testing.T) []Patch {
+	t.Helper()
+
+	switch g.intn(7) {
+	case 0:
+		return []Patch{{Op: "add", Path: "/items/-", Value: g.patchValue(t)}}
+	case 1:
+		return []Patch{{Op: "add", Path: "/extra", Value: g.patchValue(t)}}
+	case 2:
+		return []Patch{{Op: "replace", Path: "/items/1", Value: g.patchValue(t)}}
+	case 3:
+		return []Patch{{Op: "remove", Path: "/meta/keep"}}
+	case 4:
+		return []Patch{{Op: "copy", From: "/items/0", Path: "/copy"}}
+	case 5:
+		return []Patch{{Op: "move", From: "/meta/name", Path: "/name"}}
+	default:
+		return []Patch{{Op: "test", Path: "/items/0", Value: 0}}
+	}
+}
+
+func (g *jsonGenerator) patchValue(t *testing.T) any {
+	t.Helper()
+
+	if g.bool() {
+		return g.value(3)
+	}
+	value, err := generatedMeta(t, g, 3)
+	if err != nil {
+		t.Fatalf("generated patch node value: %v", err)
+	}
+	return value.Root()
+}
+
+func generatedPointerDocument(t *testing.T, g *jsonGenerator) []byte {
+	t.Helper()
+
+	values := make([][]byte, 7)
+	for i := range values {
+		values[i] = jsonValueLiteral(t, g.value(3))
+	}
+	return fmt.Appendf(nil,
+		`{"":%s,"a/b":%s,"m~n":%s,"0":%s,"items":[%s,%s],"nested":{"a/b":[%s]}}`,
+		values[0], values[1], values[2], values[3], values[4], values[5], values[6],
+	)
+}
+
+func jsonValueLiteral(t *testing.T, v any) []byte {
+	t.Helper()
+
+	out, err := stdjson.Marshal(v)
+	if err != nil {
+		t.Fatalf("stdlib could not marshal generated value: %v", err)
+	}
+	return out
+}
+
+func decodeMetaPair(t *testing.T, input []byte) (*Meta, *Meta) {
+	t.Helper()
+
+	a, err := NewDecoder(bytes.NewReader(input)).DecodeMeta()
+	if err != nil {
+		t.Fatalf("Decode first meta: %v", err)
+	}
+	b, err := NewDecoder(bytes.NewReader(input)).DecodeMeta()
+	if err != nil {
+		t.Fatalf("Decode second meta: %v", err)
+	}
+	return a, b
+}
+
+func assertMetaJSONEqual(t *testing.T, a, b *Meta) {
+	t.Helper()
+
+	aBytes, err := MarshalMeta(a)
+	if err != nil {
+		t.Fatalf("Marshal first meta: %v", err)
+	}
+	bBytes, err := MarshalMeta(b)
+	if err != nil {
+		t.Fatalf("Marshal second meta: %v", err)
+	}
+	assertCanonicalJSONEqual(t, aBytes, bBytes)
+}
+
+func assertJSON5BytesDecodeLike(t *testing.T, got, want []byte) {
+	t.Helper()
+
+	var decoded any
+	if _, err := NewJSON5Decoder(bytes.NewReader(got)).Decode(&decoded); err != nil {
+		t.Fatalf("JSON5 decoder rejected formatted output %s: %v", got, err)
+	}
+	gotJSON, err := Marshal(decoded)
+	if err != nil {
+		t.Fatalf("Marshal formatted output value: %v", err)
+	}
+	assertCanonicalJSONEqual(t, gotJSON, want)
+}
+
+func metaComments(m *Meta) []Comment {
+	var comments []Comment
+	add := func(set CommentSet) {
+		comments = append(comments, set.Leading...)
+		comments = append(comments, set.Dangling...)
+		comments = append(comments, set.Trailing...)
+	}
+	add(m.Comments())
+	for n := range m.Nodes() {
+		add(n.Comments())
+	}
+	return comments
+}
+
+func (g *jsonGenerator) commentReplacementText() string {
+	n := g.intn(24)
+	var b strings.Builder
+	for i := range n {
+		if i > 0 && g.intn(8) == 0 {
+			b.WriteByte('\n')
+			continue
+		}
+		b.WriteRune('a' + rune(g.intn(26)))
 	}
 	return b.String()
 }
