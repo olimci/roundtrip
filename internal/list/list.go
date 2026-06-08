@@ -124,6 +124,30 @@ func (l *List[T]) CutRange(first, last *Elem[T]) *List[T] {
 	return dst
 }
 
+// Clone returns a copy of l and a map from original elements to their copies.
+func (l *List[T]) Clone() (*List[T], map[*Elem[T]]*Elem[T]) {
+	dst := new(List[T])
+	elems := map[*Elem[T]]*Elem[T]{}
+	for e := range l.Elems() {
+		elems[e] = dst.PushBack(e.Value)
+	}
+	return dst, elems
+}
+
+// CloneRange returns a copy of the inclusive range [first, last] and a map from
+// original elements to their copies.
+func CloneRange[T any](first, last *Elem[T]) (*List[T], map[*Elem[T]]*Elem[T]) {
+	first.list.checkRange(first, last)
+	dst := new(List[T])
+	elems := map[*Elem[T]]*Elem[T]{}
+	for e := first; ; e = e.Next {
+		elems[e] = dst.PushBack(e.Value)
+		if e == last {
+			return dst, elems
+		}
+	}
+}
+
 // Replace replaces e with every element from src and returns e's value.
 func (l *List[T]) Replace(e *Elem[T], src *List[T]) T {
 	value := e.Value

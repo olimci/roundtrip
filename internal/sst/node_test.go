@@ -94,3 +94,39 @@ func TestNodeCloneCopiesTokenElementsAndChildren(t *testing.T) {
 		t.Fatalf("Mutating clone tokens changed original bytes to %q", got)
 	}
 }
+
+func TestSSTCloneCopiesAllTokenElements(t *testing.T) {
+	tokens := list.FromSlice([]Token[testTokenType]{
+		{Type: testTokenValue, Literal: "before"},
+		{Type: testTokenAnchor, Literal: "start"},
+		{Type: testTokenValue, Literal: "value"},
+		{Type: testTokenAnchor, Literal: "end"},
+		{Type: testTokenValue, Literal: "after"},
+	})
+	root := &Node[testTokenType, testNodeType]{
+		Start: tokens.Head.Next,
+		End:   tokens.Tail.Prev,
+	}
+
+	clone := SST[testTokenType, testNodeType]{
+		Tokens: tokens,
+		Root:   root,
+	}.Clone()
+	if clone.Root == root {
+		t.Fatal("Clone returned original root")
+	}
+	if clone.Root.Start == root.Start || clone.Root.End == root.End {
+		t.Fatal("Clone reused root token elements")
+	}
+	if clone.Tokens.Head == tokens.Head || clone.Tokens.Tail == tokens.Tail {
+		t.Fatal("Clone reused outer token elements")
+	}
+	if got := clone.Tokens.Head.Value.Literal; got != "before" {
+		t.Fatalf("Clone first token = %q, want %q", got, "before")
+	}
+
+	clone.Tokens.Remove(clone.Tokens.Head)
+	if got := tokens.Head.Value.Literal; got != "before" {
+		t.Fatalf("Mutating clone tokens changed original first token to %q", got)
+	}
+}

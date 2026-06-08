@@ -53,14 +53,7 @@ func (n *Node[TT, NT]) Bytes() []byte {
 //
 // n must be non-nil.
 func (n *Node[TT, NT]) Clone() (*Node[TT, NT], *list.List[Token[TT]]) {
-	tokens := new(list.List[Token[TT]])
-	elems := map[*list.Elem[Token[TT]]]*list.Elem[Token[TT]]{}
-	for e := n.Start; e != nil; e = e.Next {
-		elems[e] = tokens.PushBack(e.Value)
-		if e == n.End {
-			break
-		}
-	}
+	tokens, elems := list.CloneRange(n.Start, n.End)
 	return cloneNode(n, elems), tokens
 }
 

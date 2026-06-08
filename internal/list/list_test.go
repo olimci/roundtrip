@@ -134,6 +134,48 @@ func TestCutRangeTransfersOwnership(t *testing.T) {
 	}
 }
 
+func TestCloneCopiesElements(t *testing.T) {
+	l := FromSlice([]string{"a", "b", "c"})
+
+	clone, elems := l.Clone()
+
+	got := slices.Collect(clone.Values())
+	want := []string{"a", "b", "c"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("clone got %#v, want %#v", got, want)
+	}
+	if elems[l.Head] != clone.Head || elems[l.Tail] != clone.Tail {
+		t.Fatal("element map does not point to cloned elements")
+	}
+	if elems[l.Head] == l.Head || elems[l.Tail] == l.Tail {
+		t.Fatal("clone reused original elements")
+	}
+
+	clone.Remove(clone.Head)
+	got = slices.Collect(l.Values())
+	if !slices.Equal(got, want) {
+		t.Fatalf("mutating clone changed original to %#v", got)
+	}
+}
+
+func TestCloneRangeCopiesElements(t *testing.T) {
+	l := FromSlice([]string{"a", "b", "c", "d"})
+
+	clone, elems := CloneRange(l.Head.Next, l.Tail.Prev)
+
+	got := slices.Collect(clone.Values())
+	want := []string{"b", "c"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("clone range got %#v, want %#v", got, want)
+	}
+	if elems[l.Head.Next] != clone.Head || elems[l.Tail.Prev] != clone.Tail {
+		t.Fatal("element map does not point to cloned range elements")
+	}
+	if _, ok := elems[l.Head]; ok {
+		t.Fatal("element map contains element before cloned range")
+	}
+}
+
 func TestReplaceWithEmptyListRemovesRange(t *testing.T) {
 	l := FromSlice([]int{1, 2, 3, 4})
 

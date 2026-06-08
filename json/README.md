@@ -138,6 +138,7 @@ root := m.Root()
 
 - `type Meta struct { SST sst.SST[TokenType, NodeType]; Indent string }`
   exposes the underlying syntax tree and detected indent string.
+- `func (m *Meta) Clone() *Meta` returns a detached copy of the metadata tree.
 - `func (m *Meta) Root() Node` returns the document root.
 - `func (m *Meta) Nodes() iter.Seq[Node]` walks all nodes.
 - `func (m *Meta) Leaves() iter.Seq[Node]` walks leaf nodes.
@@ -149,6 +150,7 @@ root := m.Root()
 - `func (n Node) Type() NodeType` returns the node kind.
 - `func (n Node) Children() []Node` returns wrapper nodes for child entries.
 - `func (n Node) Bytes() []byte` returns the original bytes for that node.
+- `func (n Node) Clone() Node` returns a detached copy of that node.
 - `func (n Node) Decode(v any) error` decodes the node into `v`.
 - `func (n Node) Replace(v any) error` replaces the node with an encoded Go
   value, another `Node`, or a `*Meta`.

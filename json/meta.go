@@ -61,6 +61,18 @@ func (n Node) Bytes() []byte {
 	return n.node.Bytes()
 }
 
+// Clone returns a detached copy of m.
+//
+// The returned Meta preserves m's syntax options, indentation, tokens, comments,
+// and tree shape. Mutating either Meta does not affect the other.
+func (m *Meta) Clone() *Meta {
+	return &Meta{
+		SST:    m.SST.Clone(),
+		Indent: m.Indent,
+		syntax: m.syntax,
+	}
+}
+
 // Root returns a live handle to the document root.
 //
 // m must be non-nil.
@@ -98,6 +110,23 @@ func (m *Meta) Leaves() iter.Seq[Node] {
 			return yield(Node{meta: m, node: n})
 		})
 	}
+}
+
+// Clone returns a detached copy of this node.
+//
+// The returned Node is a live handle into a new Meta. Mutating either node does
+// not affect the other.
+func (n Node) Clone() Node {
+	root, tokens := n.node.Clone()
+	m := &Meta{
+		SST: sst.SST[TokenType, NodeType]{
+			Tokens: tokens,
+			Root:   root,
+		},
+		Indent: n.meta.Indent,
+		syntax: n.meta.syntax,
+	}
+	return Node{meta: m, node: root}
 }
 
 // Decode stores this node's JSON value in v.
